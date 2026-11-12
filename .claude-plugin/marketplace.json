@@ -1,0 +1,14 @@
+{
+  "name": "mieta-tools",
+  "description": "毎日の仕事を軽くするClaude Codeプラグイン",
+  "owner": { "name": "ミエタ" },
+  "plugins": [
+    {
+      "name": "mietask",
+      "description": "毎朝Slack・Gmail・カレンダーを巡回して、自分が対応すべきタスクを自分専用のSlackチャンネルに投稿する。スレッドに「3完了」と返信すると翌朝に台帳へ反映される。",
+      "author": { "name": "ミエタ" },
+      "source": "./plugins/mietask",
+      "category": "productivity"
+    }
+  ]
+}

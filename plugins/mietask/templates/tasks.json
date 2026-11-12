@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "updated_at": "",
+  "next_id": 1,
+  "tasks": [],
+  "schema": {
+    "status": [
+      "next",
+      "doing",
+      "blocked",
+      "later",
+      "done",
+      "dropped"
+    ],
+    "_comment": "next=今週やる / doing=着手済み / blocked=相手待ち / later=今週はやらない / done=完了 / dropped=やらないと決めた。タスクの粒度はカレンダーの1ブロックに収まること（最大4時間）。収まらないものはプロジェクトとして分ける。",
+    "project": "data/projects.json の id を参照。null は単発でプロジェクトに属さないもの"
+  }
+}

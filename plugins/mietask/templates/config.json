@@ -1,0 +1,124 @@
+{
+  "_comment": "mietask の設定。セットアップが owner を埋める。残りは使いながら自分で育てる。",
+  "version": 1,
+
+  "owner": {
+    "_comment": "セットアップが埋める。slack_user_id はSlackのプロフィール→その他→メンバーIDをコピー",
+    "name": "",
+    "email": "",
+    "slack_user_id": "",
+    "slack_workspace": "",
+    "calendar_id": ""
+  },
+
+  "timezone": "Asia/Tokyo",
+
+  "work_hours": {
+    "start": "09:00",
+    "end": "18:00",
+    "days": ["mon", "tue", "wed", "thu", "fri"]
+  },
+
+  "gmail": {
+    "_comment": "受信トレイ在中・未読は要対応のシグナルにならない。必ずここで落とす。",
+    "base_query": "newer_than:7d -category:promotions -category:social -category:forums -in:sent",
+
+    "_vip_note": "この人から来たら必ずP1。上司・社長・主要顧客など。メールアドレスで書く",
+    "vip_senders": [],
+
+    "_exclude_note": "通知・メルマガの送信元。使いながら足す。ここが育つほど精度が上がる",
+    "exclude_senders": [],
+    "exclude_sender_patterns": [
+      "no-reply@",
+      "noreply@",
+      "-noreply@",
+      "newsletter@",
+      "marketing@",
+      "info@",
+      "mailmagazine@"
+    ],
+
+    "_subject_note": "カレンダーの招待・承諾通知。予定はカレンダー側で見るのでメールでは要らない",
+    "exclude_subject_prefixes": [
+      "招待:",
+      "招待 - 更新:",
+      "承諾:",
+      "辞退:",
+      "仮承諾:",
+      "更新:",
+      "キャンセル:",
+      "通知:",
+      "定期的な予定"
+    ],
+
+    "own_address_rule": {
+      "_comment": "to に自分のアドレスが入っていないメールは既定でタスク化しない",
+      "enabled": true,
+      "addresses": []
+    }
+  },
+
+  "slack": {
+    "_comment": "主要なやり取りがSlackなら、ここが一番効く経路になる",
+    "watch_mentions": true,
+    "watch_dm": true,
+
+    "_channels_note": "特に見たいチャンネル。空なら自分がいる全チャンネルからメンションとDMを拾う",
+    "watch_channels": [],
+    "exclude_channels": [],
+
+    "_broadcast_note": "@here / @channel は <@自分のID> では引っかからない。別経路で拾う必要がある",
+    "broadcast": {
+      "enabled": true,
+      "keywords": ["<!here>", "<!channel>"]
+    },
+
+    "_reaction_note": "返信をスタンプで済ませる人向け。押した絵文字を『対応済み』とみなす",
+    "reply_needed": {
+      "enabled": false,
+      "check_user_id": "",
+      "resolving_emojis": ["ok", "white_check_mark", "heavy_check_mark"],
+      "acknowledging_emojis": ["eyes", "+1"]
+    },
+
+    "channel": "",
+    "_channel_note": "投稿先。セットアップが slack-post.json にも書く"
+  },
+
+  "calendar": {
+    "primary": "",
+    "also_check": [],
+    "lookahead_days": 10,
+    "_prep_note": "このキーワードが予定名に入っていたら事前準備タスクを立てる",
+    "prep_needed_keywords": ["定例", "打合せ", "商談", "面談", "レビュー", "報告"]
+  },
+
+  "notion": {
+    "_comment": "使っていなければ enabled: false のままでよい",
+    "enabled": false,
+    "workspace": "",
+    "databases": []
+  },
+
+  "meeting_notes": {
+    "_comment": "議事録が自動でメールに届く環境なら有効にする。宿題の取りこぼしが減る",
+    "enabled": false,
+    "sender": "",
+    "owner_label": ""
+  },
+
+  "priority_rules": {
+    "_comment": "期限超過は常に最上位。ここは変えないことを勧める",
+    "overdue": "P1",
+    "due_within_days": { "1": "P1", "7": "P2" },
+    "_external_note": "社外ドメインからの依頼は既定でP1。自社ドメインは除く",
+    "external_domain": "P1",
+    "external_priority_domains": [],
+    "vip_sender": "P1",
+    "default": "P3"
+  },
+
+  "dismissed_refs": {
+    "_comment": "「これは対応不要」と言われたものの ref。二度と出さない"
+  }
+}

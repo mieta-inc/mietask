@@ -1,0 +1,9 @@
+{
+  "_comment": "投稿先と、投稿時の見た目。チャンネルIDは秘密ではないのでここでよい。Botトークンは ~/.config/mietask/slack-token に置く（このファイルには書かない）",
+  "channel": "",
+  "channel_name": "",
+  "workspace": "",
+  "username": "ミエタスク",
+  "icon_url": "https://raw.githubusercontent.com/mieta-inc/mietask/main/assets/icon-512.png",
+  "_display_note": "username と icon_url は投稿ごとにSlackへ渡す。App Home の設定では反映されないことがあるため（chat:write.customize が要る）。スコープが無ければ警告を出して既定の見た目で投稿する"
+}
