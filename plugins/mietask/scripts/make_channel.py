@@ -104,6 +104,38 @@ def ensure_owner_in(token: str, channel: str, owner: str) -> str:
     raise PostError(f"本人をチャンネルに入れられませんでした（{err}）\n{hint(err)}")
 
 
+def find_team_channel(token: str, name: str) -> str:
+    """Botが入っているプライベートチャンネルから、名前でチームのまとめチャンネルを探す。
+
+    **本人は招待しない。** まとめチャンネルは管理者が見る場所で、メンバー同士が
+    お互いの一覧を見られないようにするため。投稿はBotが行うので、本人が入る必要はない。
+    """
+    target = name.lstrip("#").strip()
+    cursor = ""
+    while True:
+        params: Dict[str, Any] = {
+            "types": "private_channel",
+            "exclude_archived": "true",
+            "limit": "200",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        r = call(token, "conversations.list", params)
+        if not r.get("ok"):
+            err = r.get("error", "unknown")
+            raise PostError(f"チャンネルの一覧を取れませんでした（{err}）\n{hint(err)}")
+        for ch in r.get("channels") or []:
+            if ch.get("name") == target:
+                return ch["id"]
+        cursor = (r.get("response_metadata") or {}).get("next_cursor") or ""
+        if not cursor:
+            break
+    raise PostError(
+        f"#{target} が見つかりません。\n"
+        "  名前が違うか、Botがまだそのチャンネルに入っていません。管理者に確認してください。"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="投稿先のプライベートチャンネルを作る")
     ap.add_argument("--name", help="チャンネル名（#は不要）")
@@ -112,11 +144,25 @@ def main() -> int:
         help="既にあるチャンネルを使う場合のID。**本人が入っているか必ず確認する**",
     )
     ap.add_argument("--owner", help="本人のSlackユーザーID（既定: config.json）")
+    ap.add_argument(
+        "--find-team",
+        metavar="NAME",
+        help="チームのまとめチャンネルを名前で探してIDを出す。本人は招待しない",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    if args.find_team:
+        try:
+            ch = find_team_channel(read_token(None), args.find_team)
+        except PostError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            return 1
+        print(f"team_channel: {ch}")
+        return 0
+
     if not args.name and not args.existing:
-        print("エラー: --name か --existing のどちらかが要ります。", file=sys.stderr)
+        print("エラー: --name か --existing か --find-team のどれかが要ります。", file=sys.stderr)
         return 1
 
     owner = args.owner or paths.owner_slack_id()

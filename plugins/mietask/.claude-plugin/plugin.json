@@ -1,6 +1,8 @@
 {
   "name": "mietask",
   "description": "毎朝のタスク巡回をSlackに届け、完了の返信を台帳に反映する",
-  "version": "0.1.0",
-  "author": { "name": "ミエタ" }
+  "version": "0.2.0",
+  "author": {
+    "name": "ミエタ"
+  }
 }
