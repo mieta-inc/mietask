@@ -7,6 +7,7 @@
   2ステイ      → 明日もそのまま出す（相手待ち・保留中のものも翌朝は必ず出す）
   3 メモ本文   → そのタスクにメモを残し、翌朝の一覧に「前回のメモ」として出す
   2ステイ 来週の会議で決める  → ステイ＋メモ
+  追加 見積書を作る 11/20まで → 新しいタスクとして足す（Slackや議事録に出てこない仕事を手で入れる）
 
 毎朝の流れ:
 
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -103,6 +105,12 @@ RE_MEMO_LINE = re.compile(
 
 # 指定のあとに付く語尾。メモの判定から外す
 CMD_TAIL = r"(?:しました|しましたー|した|です|でした|ました|でーす|中|しています|してます)?"
+
+# 「追加 見積書を作る 11/20まで」。Slackやメール・議事録に出てこない仕事を手で足すための行（2026-11-14 河村さん）。
+# 行頭だけを見る。この行は完了・ステイ・メモの読み取りから外す（「追加 3完了の報告書」で3が完了にならないように）。
+RE_ADD = re.compile(r"^\s*(?:追加|タスク追加|タスク化|\+|＋)\s*[:：]?\s*(?P<body>\S.*)$")
+# 追加の行に書かれた期限。「11/20」「11/20まで」「（11/20）」
+RE_ADD_DUE = re.compile(r"[（(]?\s*(?P<m>\d{1,2})\s*/\s*(?P<d>\d{1,2})\s*(?:まで|〆|締切|締め切り)?\s*[）)]?")
 
 # メモから落とす前後の記号
 MEMO_STRIP = " \t　、,。.．:：・-ー"
@@ -375,6 +383,43 @@ def parse_done(texts: List[str], mapping: Dict[str, str]) -> Tuple[List[str], Li
     return ids, unresolved
 
 
+def split_adds(texts: List[str]) -> Tuple[List[str], List[str]]:
+    """「追加 …」の行を抜き出す。残りの本文と、追加の中身を返す。"""
+    rest: List[str] = []
+    adds: List[str] = []
+    for text in texts:
+        keep: List[str] = []
+        for line in (text or "").splitlines():
+            m = RE_ADD.match(line)
+            if m:
+                adds.append(m.group("body").strip())
+            else:
+                keep.append(line)
+        rest.append("\n".join(keep))
+    return rest, adds
+
+
+def parse_add(body: str, today: dt.date) -> Tuple[str, Optional[str]]:
+    """「見積書を作る 11/20まで」→ (タイトル, '2026-11-20')。期限が無ければ None。
+
+    年は書かれないので補う。今日より60日以上前の日付になるなら来年とみなす（12月に「1/10」と書いた場合）。
+    月日として成り立たない数字（13/40 など）は期限として扱わず、タイトルに残す。
+    """
+    due: Optional[str] = None
+    title = body
+    m = RE_ADD_DUE.search(body)
+    if m:
+        try:
+            d = dt.date(today.year, int(m.group("m")), int(m.group("d")))
+            if d < today - dt.timedelta(days=60):
+                d = dt.date(today.year + 1, d.month, d.day)
+            due = d.isoformat()
+            title = (body[: m.start()] + body[m.end():]).strip(MEMO_STRIP)
+        except ValueError:
+            pass
+    return (title or body).strip(), due
+
+
 def resolve(key: str, mapping: Dict[str, str]) -> Optional[str]:
     if key.startswith("t"):
         return key if re.fullmatch(r"t\d{3,}", key) else None
@@ -462,9 +507,10 @@ def cmd_complete(args: argparse.Namespace) -> int:
             "  番号指定を無視してIDだけ拾うなら --allow-no-mapping を付けてください。"
         )
 
+    texts, adds = split_adds(texts)
     ids, stay_ids, memos, unresolved = parse_replies(texts, mapping)
-    if not (ids or stay_ids or memos or unresolved):
-        print("完了・ステイ・メモの返信はありませんでした。")
+    if not (ids or stay_ids or memos or unresolved or adds):
+        print("完了・ステイ・メモ・追加の返信はありませんでした。")
         return 0
     thread_ts = get_thread(state).get("ts") or ""
 
@@ -522,18 +568,53 @@ def cmd_complete(args: argparse.Namespace) -> int:
         t["last_memo"] = entry
         noted.append(f"{tid} 📝 {memo}")
 
-    if done or stayed or noted:
+    # 追加: 新しいタスクとして足す。ref はスレッドと本文から作るので、同じスレッドを二度読んでも二重にならない。
+    added: List[str] = []
+    if adds:
+        refs = by_ref(data["tasks"])
+        nid = next_task_id(data["tasks"])
+        today = dt.datetime.now(JST).date()
+        for body in adds:
+            h = hashlib.sha1(body.encode("utf-8")).hexdigest()[:10]
+            ref = f"manual:{thread_ts or 'nothread'}:{h}"
+            if ref in refs:
+                continue
+            title, due = parse_add(body, today)
+            tid = f"t{nid:03d}"
+            nid += 1
+            task = {
+                "id": tid,
+                "title": title,
+                "due": due,
+                "due_confidence": "explicit" if due else None,
+                "status": "next",
+                "priority": "P2" if due else "P3",
+                "source": {"app": "manual", "ref": ref, "url": "", "from": "本人が追加"},
+                "notes": "",
+                "next_action": "",
+                "project": None,
+                "detected_at": stamp,
+                "last_seen_at": stamp,
+            }
+            data["tasks"].append(task)
+            refs[ref] = task
+            added.append(f"{tid} {title}" + (f"（期限 {due}）" if due else "（期限なし）"))
+        data["next_id"] = nid
+
+    if done or stayed or noted or added:
         data["updated_at"] = stamp
         save(TASKS, data, args.dry_run)
 
     tag = "[dry-run] " if args.dry_run else ""
-    print(f"{tag}完了 {len(done)}件 / ステイ {len(stayed)}件 / メモ {len(noted)}件")
+    print(f"{tag}完了 {len(done)}件 / ステイ {len(stayed)}件 / メモ {len(noted)}件 / 追加 {len(added)}件")
     for d in done:
         print("  done:", d)
     for st in stayed:
         print("  ステイ:", st)
     for nt in noted:
         print("  メモ:", nt)
+    for ad in added:
+        print("  追加:", ad)
     # 握りつぶさない。拾えなかったものは必ず出す。
     for a in already:
         print("  変更なし:", a)
