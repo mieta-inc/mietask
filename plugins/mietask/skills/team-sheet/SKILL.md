@@ -45,7 +45,7 @@ bash "$B" registry --team pm
 - 並び順は台帳のメンバーの順
 - 「管理台帳を使っていません」と出たら、従来どおり `$H/team.json` を読む（`$H` は `bash "$B" paths home` の出力。
   形は `{"team","channel","notion":{"projects","tasks"},"members":[{"name","slack_id","notion_user"}]}`）
-- Notion のユーザーIDは、Notion の検索で `query_type: "user"` にしてメールを渡して引く。
+- Notion のユーザーIDは、台帳の `members[].notion_user` を使う。空の人だけ、Notion の検索で `query_type: "user"` にしてメールを渡して引く。
   ユーザー一覧（get-users）には全員が出ないので使わない。引けた値は `$H/notion-users.json`（メール → `user://…`）に
   控えて次回から使う。**メールで一致しないときは推測で選ばない。** Slack と Notion でメールが違う人がいるので、管理者に聞く
 

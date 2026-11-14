@@ -126,29 +126,52 @@ func cmdSetup(a *args) error {
 	fmt.Println("台帳: OK")
 
 	// 2. 鍵
-	token, err := readToken("")
-	if err != nil {
-		return fmt.Errorf("鍵がまだ置かれていません。先に入力欄で鍵を貼ってください。\n%s", err)
+	relay := relayKeyFromFile()
+	var token string
+	if relay == nil {
+		if token, err = readToken(""); err != nil {
+			return fmt.Errorf("鍵がまだ置かれていません。先に入力欄で鍵を貼ってください。\n%s", err)
+		}
+		fmt.Println("鍵: OK")
+	} else {
+		if relay.ID != slackID {
+			return fmt.Errorf("この鍵は別の人（%s）のものです。自分宛ての DM で届いた鍵を貼ってください", relay.ID)
+		}
+		me, err := relayMe(relay)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("鍵: OK（%s さん専用）\n", me.Me.Name)
+		var names []string
+		for _, t := range me.Teams {
+			names = append(names, t.ID)
+		}
+		if len(names) > 0 {
+			fmt.Printf("管理台帳: 所属 %s\n", strings.Join(names, ", "))
+		} else {
+			fmt.Println("管理台帳: 所属チームなし（まとめチャンネルには出ません）")
+		}
 	}
-	fmt.Println("鍵: OK")
 
-	// 3. 管理台帳
-	reg, stale, rerr := fetchRegistry()
-	if reg != nil {
-		if stale {
-			fmt.Printf("管理台帳: 読めませんでした（%s）。前回の内容で確かめます\n", rerr)
+	// 3. 管理台帳（Botトークン＋台帳の鍵を使う、以前の方式のとき）
+	if relay == nil {
+		reg, stale, rerr := fetchRegistry()
+		if reg != nil {
+			if stale {
+				fmt.Printf("管理台帳: 読めませんでした（%s）。前回の内容で確かめます\n", rerr)
+			}
+			m := reg.member(slackID)
+			switch {
+			case m == nil:
+				fmt.Println("管理台帳: 未登録です。管理者に登録を頼んでください（登録されるまで、まとめチャンネルには出ません）")
+			case strings.TrimSpace(m.Status) == statusStopped:
+				return errors.New("管理台帳でミエタスクの利用が停止されています。管理者に確認してください。")
+			default:
+				fmt.Printf("管理台帳: %s / 所属 %s\n", m.Name, strings.Join(m.Teams, ", "))
+			}
+		} else if rerr != nil {
+			fmt.Printf("管理台帳: 読めませんでした（%s）。あとで「ミエタスクを診断して」で確かめてください\n", rerr)
 		}
-		m := reg.member(slackID)
-		switch {
-		case m == nil:
-			fmt.Println("管理台帳: 未登録です。管理者に登録を頼んでください（登録されるまで、まとめチャンネルには出ません）")
-		case strings.TrimSpace(m.Status) == statusStopped:
-			return errors.New("管理台帳でミエタスクの利用が停止されています。管理者に確認してください。")
-		default:
-			fmt.Printf("管理台帳: %s / 所属 %s\n", m.Name, strings.Join(m.Teams, ", "))
-		}
-	} else if rerr != nil {
-		fmt.Printf("管理台帳: 読めませんでした（%s）。あとで「ミエタスクを診断して」で確かめてください\n", rerr)
 	}
 
 	// 4. 投稿先チャンネル
@@ -163,28 +186,30 @@ func cmdSetup(a *args) error {
 	}
 	channel := pyStrIfTruthy(post.Val("channel"))
 	chName := pyStrIfTruthy(post.Val("channel_name"))
-	if channel != "" {
-		if dry {
-			fmt.Printf("[dry-run] 既存の投稿先 %s に本人がいるか確かめます\n", channel)
-		} else {
-			msg, err := ensureMemberIn(token, channel, slackID)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("投稿先: すでに設定済み（#%s / %s）。%s\n", chName, channel, msg)
+	cands := channelCandidates(email)
+	if n := strings.TrimSpace(a.get("channel-name")); n != "" {
+		cands = []string{strings.TrimLeft(n, "#")}
+	}
+	switch {
+	case dry:
+		fmt.Printf("[dry-run] 投稿先を用意します（候補: %s）\n", strings.Join(cands, " → "))
+	case relay != nil:
+		// 窓口が、台帳に記録済みの投稿先を使うか、無ければ作って本人を招待する
+		id, nm, msg, err := relaySetup(relay, cands)
+		if err != nil {
+			return err
 		}
-	} else {
-		cands := channelCandidates(email)
-		if n := strings.TrimSpace(a.get("channel-name")); n != "" {
-			cands = []string{strings.TrimLeft(n, "#")}
+		channel, chName = id, nm
+		fmt.Printf("投稿先: #%s。%s\n", nm, msg)
+	case channel != "":
+		msg, err := ensureMemberIn(token, channel, slackID)
+		if err != nil {
+			return err
 		}
-		if dry {
-			fmt.Printf("[dry-run] 投稿先を次の順で作ります: %s\n", strings.Join(cands, " → "))
-		} else {
-			channel, chName, err = createOwnChannel(token, cands, slackID)
-			if err != nil {
-				return err
-			}
+		fmt.Printf("投稿先: すでに設定済み（#%s / %s）。%s\n", chName, channel, msg)
+	default:
+		if channel, chName, err = createOwnChannel(token, cands, slackID); err != nil {
+			return err
 		}
 	}
 

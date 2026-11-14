@@ -88,7 +88,13 @@ type Member struct {
 	Email   string   `json:"email"`
 	Teams   []string `json:"teams"`
 	Status  string   `json:"status"`
-	Note    string   `json:"note,omitempty"`
+	// NotionUser は MTD の担当を引くための Notion ユーザーID（user://…）。空なら管理者の画面がメールで探す
+	NotionUser string `json:"notion_user,omitempty"`
+	Note       string `json:"note,omitempty"`
+	// 以下は一人ずつの鍵（窓口経由）のときに窓口が返す
+	Channel string `json:"channel,omitempty"`
+	LastRun string `json:"last_run,omitempty"`
+	Version string `json:"version,omitempty"`
 }
 
 type Activity struct {
@@ -316,13 +322,33 @@ func teamChannels() ([][2]string, string, error) {
 
 // cmdPostTeam は自分用の投稿内容から、所属する全チームのまとめチャンネルへ投稿する。
 func cmdPostTeam(payloadPath, nameArg string, dryRun bool) error {
-	if !dryRun {
+	relay := relayKeyFromFile()
+	if !dryRun && relay == nil {
 		if err := checkActive(); err != nil {
 			return err
 		}
 	}
-	chans, regName, err := teamChannels()
-	if err != nil {
+	var chans [][2]string
+	var regName string
+	var err error
+	if relay != nil {
+		// 一人ずつの鍵：所属チームは窓口に聞く（窓口が停止・鍵の無効も確かめる）
+		me, rerr := relayMe(relay)
+		if rerr != nil {
+			return rerr
+		}
+		regName = me.Me.Name
+		for _, t := range me.Teams {
+			switch {
+			case t.Missing:
+				fmt.Fprintf(os.Stderr, "警告: 管理台帳のチーム %q が見つかりません\n", t.ID)
+			case t.Channel == "":
+				fmt.Fprintf(os.Stderr, "警告: チーム %s のまとめチャンネルが台帳に入っていません\n", t.ID)
+			default:
+				chans = append(chans, [2]string{t.ID, t.Channel})
+			}
+		}
+	} else if chans, regName, err = teamChannels(); err != nil {
 		return err
 	}
 	if len(chans) == 0 {
@@ -454,6 +480,15 @@ func doctorRegistry(ok, ng, warn func(string, string)) {
 //	mietask registry              全体
 //	mietask registry --team pm    PM と、その下のチーム（PM1・PM2…）に属する人だけ
 func cmdRegistry(teamID string) error {
+	if k := relayKeyFromFile(); k != nil {
+		reg, err := relayRegistry(k, teamID)
+		if err != nil {
+			return err
+		}
+		b, _ := json.MarshalIndent(reg, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
 	reg, stale, err := fetchRegistry()
 	if reg == nil {
 		if err != nil {
@@ -464,33 +499,38 @@ func cmdRegistry(teamID string) error {
 	if stale {
 		fmt.Fprintf(os.Stderr, "警告: %s。前回読んだ内容を出します\n", err)
 	}
-	out := *reg
+	out := reg
 	if teamID != "" {
 		ids := reg.subtree(teamID)
 		if len(ids) == 0 {
 			return fmt.Errorf("チーム %s が台帳にありません", teamID)
 		}
-		in := map[string]bool{}
-		for _, id := range ids {
-			in[strings.ToLower(id)] = true
-		}
-		out.Teams = nil
-		for _, t := range reg.Teams {
-			if in[strings.ToLower(t.ID)] {
-				out.Teams = append(out.Teams, t)
-			}
-		}
-		out.Members = nil
-		for _, m := range reg.Members {
-			for _, tid := range m.Teams {
-				if in[strings.ToLower(strings.TrimSpace(tid))] {
-					out.Members = append(out.Members, m)
-					break
-				}
-			}
-		}
+		out = filterRegistry(reg, ids)
 	}
 	b, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(b))
 	return nil
+}
+
+// filterRegistry は指定したチーム（ID の一覧）と、そこに属するメンバーだけを残す。
+func filterRegistry(reg *Registry, ids []string) *Registry {
+	in := map[string]bool{}
+	for _, id := range ids {
+		in[strings.ToLower(id)] = true
+	}
+	out := &Registry{Settings: reg.Settings, Activity: reg.Activity}
+	for _, t := range reg.Teams {
+		if in[strings.ToLower(t.ID)] {
+			out.Teams = append(out.Teams, t)
+		}
+	}
+	for _, m := range reg.Members {
+		for _, tid := range m.Teams {
+			if in[strings.ToLower(strings.TrimSpace(tid))] {
+				out.Members = append(out.Members, m)
+				break
+			}
+		}
+	}
+	return out
 }

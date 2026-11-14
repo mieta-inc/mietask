@@ -1,5 +1,5 @@
-﻿# mietask: Botトークンを伏せ字の入力欄で受け取り、%USERPROFILE%\.config\mietask\slack-token に保存する。
-# トークンはこのスクリプトの中だけを通り、画面にもClaudeの会話にも出ない。
+﻿# mietask: ミエタスクの鍵を伏せ字の入力欄で受け取り、%USERPROFILE%\.config\mietask\slack-token に保存する。
+# 鍵はこのスクリプトの中だけを通り、画面にもClaudeの会話にも出ない。
 # token_prompt.sh から呼ばれる。出力は「OK」か「保存されませんでした（…）」だけ。
 # 日本語を正しく読ませるため、このファイルは BOM 付き UTF-8 で保存してある（Windows PowerShell 5.1 対策）。
 
@@ -19,7 +19,7 @@ try {
     $form.TopMost = $true
 
     $label = New-Object System.Windows.Forms.Label
-    $label.Text = '1Passwordの「ミエタスク Bot Token」を貼り付けて「保存」を押してください'
+    $label.Text = 'ミエタスクの Bot から DM で届いた鍵を貼り付けて「保存」を押してください'
     $label.Location = New-Object System.Drawing.Point(14, 14)
     $label.Size = New-Object System.Drawing.Size(412, 36)
     $form.Controls.Add($label)

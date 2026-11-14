@@ -52,6 +52,16 @@ jobs:
           bash "$B" post --payload "$T/p.json" --channel C1 --dry-run
           bash "$B" team-payload --payload "$T/p.json" --name "テスト"
 
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 管理台帳の窓口（Apps Script）のテスト
+        run: node --test admin/test/registry.test.js
+
   reproducible:
     runs-on: macos-latest
     steps:

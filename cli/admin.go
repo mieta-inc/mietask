@@ -7,8 +7,8 @@ package main
 //	mietask admin create-team --id pm1             まとめチャンネルを作り、管理者を招待する
 //	mietask admin invite-managers --id pm1         管理者を替えたあと、新しい管理者を招待する
 //	mietask admin archive-member --slack U0...     停止にした人の投稿先をアーカイブする
-//	mietask admin make-key --slack-token-file F --registry-url U --registry-key K
-//	                                               ミエタスクの鍵を作ってクリップボードに入れる
+//	mietask admin make-key --slack-token-file F --registry-url U --registry-key-prompt
+//	                                               ミエタスクの鍵を作ってクリップボードに入れる（合言葉は入力欄で受け取る）
 
 import (
 	"errors"
@@ -21,7 +21,7 @@ import (
 )
 
 func runAdmin(rest []string) error {
-	a, err := parseArgs(rest)
+	a, err := parseArgs(rest, "registry-key-prompt")
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,13 @@ func runAdmin(rest []string) error {
 	case "archive-member":
 		return adminArchiveMember(a.get("slack"), a.flags["dry-run"])
 	case "make-key":
-		return adminMakeKey(a.get("slack-token-file"), a.get("registry-url"), a.get("registry-key"), a.get("out"))
+		regKey := a.get("registry-key")
+		if regKey == "" && a.flags["registry-key-prompt"] {
+			if regKey, err = promptHidden("Apps Script の showKey で表示した合言葉を貼り付けて「OK」を押してください"); err != nil {
+				return err
+			}
+		}
+		return adminMakeKey(a.get("slack-token-file"), a.get("registry-url"), regKey, a.get("out"))
 	}
 	return fmt.Errorf("不明な admin コマンドです: %s", a.pos[0])
 }
@@ -232,7 +238,14 @@ func adminMakeKey(tokenPath, regURL, regKey, out string) error {
 	if !strings.HasPrefix(cur.Slack, "xoxb-") {
 		return errors.New("Botトークン（xoxb-）が読めません")
 	}
-	key := encodeKey(mietaskKey{Slack: cur.Slack, RegistryURL: regURL, RegistryKey: regKey})
+	k := mietaskKey{Slack: cur.Slack, RegistryURL: regURL, RegistryKey: strings.TrimSpace(regKey)}
+	// 配る前に、その鍵で台帳を本当に読めるか確かめる（合言葉の貼り間違いをここで止める）
+	reg, err := fetchRegistryFrom(k)
+	if err != nil {
+		return fmt.Errorf("この鍵では管理台帳を読めませんでした（%s）。鍵は作っていません", err)
+	}
+	fmt.Printf("管理台帳に接続できました（チーム %d・メンバー %d人）\n", len(reg.Teams), len(reg.Members))
+	key := encodeKey(k)
 	if out != "" {
 		if err := os.WriteFile(out, []byte(key), 0o600); err != nil {
 			return err
@@ -250,4 +263,21 @@ func adminMakeKey(tokenPath, regURL, regKey, out string) error {
 	}
 	fmt.Println("鍵をクリップボードに入れました。1Password の「ミエタスク Bot Token」に貼り替えてください")
 	return nil
+}
+
+// promptHidden は伏せ字の入力欄を出して文字列を受け取る（Mac のみ）。受け取った値は画面にもログにも出さない。
+func promptHidden(msg string) (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", errors.New("この環境では入力欄を出せません。--registry-key で渡してください")
+	}
+	script := `text returned of (display dialog "` + msg + `" default answer "" with hidden answer with title "ミエタスク" buttons {"キャンセル", "OK"} default button "OK" cancel button "キャンセル")`
+	out, err := exec.Command("osascript", "-e", script).Output()
+	if err != nil {
+		return "", errors.New("入力がキャンセルされました")
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "", errors.New("入力が空でした")
+	}
+	return v, nil
 }

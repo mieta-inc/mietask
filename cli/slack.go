@@ -61,6 +61,9 @@ func readToken(path string) (string, error) {
 		return "", err
 	}
 	// 中身は生の Botトークンでも、ミエタスクの鍵（Botトークンと台帳の窓口をまとめたもの）でもよい
+	if rk, _ := decodeRelayKey(string(b)); rk != nil {
+		return "", &PostError{"この操作には Botトークンが要りますが、置かれているのは一人ずつの鍵です。管理の操作は管理台帳（スプレッドシート）の「ミエタスク」メニューから行ってください"}
+	}
 	k, err := decodeKey(string(b))
 	if err != nil {
 		return "", &PostError{err.Error() + ": " + path}
@@ -368,6 +371,21 @@ func postPayloadFile(payloadPath, channelArg, tokenPath string, dryRun, beat boo
 	if channel == "" {
 		return &PostError{fmt.Sprintf("投稿先チャンネルが決まりません。--channel で渡すか、%s に {\"channel\": \"C...\"} を置いてください。", slackPostPath())}
 	}
+	if relay := relayKeyFromFile(); relay != nil {
+		// 一人ずつの鍵：窓口が鍵と停止を確かめ、許された投稿先にだけ投稿する
+		rootTS, err := relayPost(relay, channel, parent, replies)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("ts: %s\n", rootTS)
+		if link := permalink(channel, rootTS); link != "" {
+			fmt.Printf("親メッセージ: %s\n", link)
+		}
+		if len(replies) > 0 {
+			fmt.Printf("  子スレッド %d件 投稿\n", len(replies))
+		}
+		return nil
+	}
 	token, err := readToken(tokenPath)
 	if err != nil {
 		return err
@@ -448,6 +466,27 @@ func cmdDelete(tsList []string, tsFile, channel, tokenPath string, dryRun bool) 
 		fmt.Printf("[dry-run] channel=%s / %d件\n", channel, len(uniq))
 		for _, t := range uniq {
 			fmt.Printf("  %s\n", t)
+		}
+		return nil
+	}
+	if relay := relayKeyFromFile(); relay != nil {
+		// 窓口経由で消せるのは、本人の投稿先にある Bot の投稿だけ
+		tsAny := make([]any, len(uniq))
+		for i, t := range uniq {
+			tsAny[i] = t
+		}
+		out, err := relayCall(relay, "delete", map[string]any{"ts": tsAny})
+		if err != nil {
+			return err
+		}
+		del, _ := out["deleted"].([]any)
+		failed, _ := out["failed"].([]any)
+		fmt.Printf("削除 %d件 / 失敗 %d件\n", len(del), len(failed))
+		for _, f := range failed {
+			fmt.Fprintln(os.Stderr, f)
+		}
+		if len(failed) > 0 {
+			return errSilent
 		}
 		return nil
 	}

@@ -61,6 +61,19 @@ func cmdDoctor() int {
 		}
 	}
 
+	// 一人ずつの鍵（窓口経由）なら、鍵・Bot・投稿先・所属は窓口に確かめてもらう
+	if relay := relayKeyFromFile(); relay != nil {
+		relayDoctor(relay, ok, ng, warn)
+		if st, err := loadLedger(statePath()); err == nil {
+			if last := str(st.Val("last_sweep_at")); last != "" {
+				ok("前回の巡回", last)
+			} else {
+				warn("前回の巡回", "まだ一度も巡回していません")
+			}
+		}
+		return doctorSummary(bad)
+	}
+
 	// 投稿先
 	ch, err := readDefaultChannel()
 	if err != nil {
@@ -113,6 +126,10 @@ func cmdDoctor() int {
 	// 管理台帳（使っている場合）
 	doctorRegistry(ok, ng, warn)
 
+	return doctorSummary(bad)
+}
+
+func doctorSummary(bad int) int {
 	fmt.Println()
 	if bad == 0 {
 		fmt.Println("問題は見つかりませんでした。")

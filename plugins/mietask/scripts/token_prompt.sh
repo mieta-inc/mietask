@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Botトークンを伏せ字の入力欄で受け取り、そのまま ~/.config/mietask/slack-token に保存する。
-# トークンはこのスクリプトの中だけを通り、画面にもClaudeの会話にも出ない。
+# ミエタスクの鍵を伏せ字の入力欄で受け取り、そのまま ~/.config/mietask/slack-token に保存する。
+# 鍵はこのスクリプトの中だけを通り、画面にもClaudeの会話にも出ない。
 #
 #   bash token_prompt.sh
 #
@@ -8,7 +8,7 @@
 
 set -u
 _src="${BASH_SOURCE[0]}"; case "$_src" in */*) HERE="$(cd "${_src%/*}" && pwd)" ;; *) HERE="$(pwd)" ;; esac
-MSG='1Passwordの「ミエタスク Bot Token」を貼り付けて「保存」を押してください'
+MSG='ミエタスクの Bot から DM で届いた鍵を貼り付けて「保存」を押してください'
 
 case "$(uname -s 2>/dev/null)" in
   Darwin)
