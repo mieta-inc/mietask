@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""巡回結果を tasks.json に登録し、Slackスレッドの「N完了」を反映する。
+"""巡回結果を tasks.json に登録し、Slackスレッドへの返信を反映する。
+
+返信で受けるもの:
+
+  1完了        → done にする。翌日から出ない
+  2ステイ      → 明日もそのまま出す（相手待ち・保留中のものも翌朝は必ず出す）
+  3 メモ本文   → そのタスクにメモを残し、翌朝の一覧に「前回のメモ」として出す
+  2ステイ 来週の会議で決める  → ステイ＋メモ
 
 毎朝の流れ:
 
-  1. complete  前日のスレッド返信を読んで、完了したタスクを done にする
+  1. complete  前日のスレッド返信を読んで、完了・ステイ・メモを反映する
   2. upsert    今日の巡回結果を tasks.json に登録し、表示番号 → task.id を記録する
   3. (投稿)    post_slack.py で #マイ-タスク に投げる
   4. record    投稿したスレッドの ts を控える（翌朝これを読む）
@@ -75,6 +82,30 @@ RE_DONE = re.compile(
     r"(?P<verb>完了|かんりょう|済み|済|おわり|終わり|done|DONE|Done)"
     r"(?!させ|したい|する|しない|せず|します|しとく|しておく|予定|次第|したら|すれば)",
 )
+
+# 「2ステイ」「t091 stay」。明日もそのまま出す、の意味（2026-11-14 河村さん）。
+# 「継続」「そのまま」はメモの文中に普通に出てくるので拾わない。
+RE_STAY = re.compile(
+    r"(?:^|[\s、,。])"
+    r"(?P<key>t\d{3,}|\d{1,3})"
+    r"\s*(?:番)?\s*"
+    r"(?P<verb>ステイ|すてい|stay|STAY|Stay)",
+)
+
+# 「3 山田さんに電話済み」のような、番号で始まる行をメモとして拾う。
+# 番号のあとは空白・句読点・括弧に限る。「11/20に…」「3:00に…」「3件…」を
+# 番号指定と取り違えないため。区切りなしの「3山田さん…」は拾わない（迷ったら拾わない）。
+RE_MEMO_LINE = re.compile(
+    r"^\s*(?P<key>t\d{3,}|\d{1,3})\s*(?:番)?"
+    r"(?:\s+|[.．、,)）]\s*|[:：](?!\d)\s*)"
+    r"(?P<rest>\S.*)$",
+)
+
+# 指定のあとに付く語尾。メモの判定から外す
+CMD_TAIL = r"(?:しました|しましたー|した|です|でした|ました|でーす|中|しています|してます)?"
+
+# メモから落とす前後の記号
+MEMO_STRIP = " \t　、,。.．:：・-ー"
 
 
 class SyncError(RuntimeError):
@@ -224,10 +255,15 @@ def cmd_upsert(args: argparse.Namespace) -> int:
         today = dt.datetime.now(JST).date().isoformat()
         mapped = set(mapping.values())
         for t in tasks:
-            if t.get("status") not in ACTIONABLE or t["id"] in mapped:
+            if t["id"] in mapped or t.get("status") in CLOSED:
+                continue
+            # ステイ指定は相手待ち・保留中でも翌朝は必ず出す（そのまま出す、の約束）
+            if t.get("status") not in ACTIONABLE and not t.get("stay_pending"):
                 continue
             due = t.get("due")
-            if due and due < today:
+            if t.get("status") == "blocked":
+                section = "waiting"
+            elif due and due < today:
                 section = "overdue"
             elif due == today:
                 section = "today"
@@ -236,6 +272,12 @@ def cmd_upsert(args: argparse.Namespace) -> int:
             number += 1
             mapping[str(number)] = t["id"]
             carried.append({**t, "_section": section, "_number": number})
+
+    # ステイの約束は「翌朝1回出す」まで。出したら外す。
+    shown = set(mapping.values())
+    for t in tasks:
+        if t["id"] in shown:
+            t.pop("stay_pending", None)
 
     data["next_id"] = nid
     data["updated_at"] = stamp
@@ -272,10 +314,38 @@ def cmd_upsert(args: argparse.Namespace) -> int:
             if c.get("next_action"):
                 print(f"      → 次の一手: {c['next_action']}")
 
+    # 前回のメモとステイ回数。投稿のタスク行の下に添える。
+    by_id = {t["id"]: t for t in tasks}
+    notes = []
+    for n, tid in mapping.items():
+        t = by_id.get(tid) or {}
+        memo = t.get("last_memo") or {}
+        stays = t.get("stay_count") or 0
+        if memo.get("text") or stays:
+            notes.append((n, tid, memo, stays))
+    if notes:
+        print("\n前回のメモ・ステイ（タスク行の下に添える）:")
+        for n, tid, memo, stays in notes:
+            parts = []
+            if memo.get("text"):
+                parts.append(f"📝 {memo_date(memo.get('at'))}のメモ: {memo['text']}")
+            if stays:
+                parts.append(f"↻ ステイ{stays}回")
+            print(f"  {n} → {tid}  " + "  ".join(parts))
+
     print("\n表示番号 → task.id")
     for n, tid in mapping.items():
         print(f"  {n} → {tid}")
     return 0
+
+
+def memo_date(at: Optional[str]) -> str:
+    """'2026-11-14T18:02:00+09:00' → '11/14'。読めなければ空。"""
+    try:
+        d = dt.datetime.fromisoformat(at or "")
+        return f"{d.month}/{d.day}"
+    except ValueError:
+        return ""
 
 
 # ---------------------------------------------------------------- complete
@@ -303,6 +373,64 @@ def parse_done(texts: List[str], mapping: Dict[str, str]) -> Tuple[List[str], Li
             else:
                 unresolved.append(m.group(0).strip())
     return ids, unresolved
+
+
+def resolve(key: str, mapping: Dict[str, str]) -> Optional[str]:
+    if key.startswith("t"):
+        return key if re.fullmatch(r"t\d{3,}", key) else None
+    return mapping.get(key)
+
+
+def parse_replies(
+    texts: List[str], mapping: Dict[str, str]
+) -> Tuple[List[str], List[str], List[Tuple[str, str]], List[str]]:
+    """返信から 完了・ステイ・メモ を拾う。
+
+    返り値: (done_ids, stay_ids, [(task_id, memo)], unresolved)
+    メモは1行ずつ見る。行から完了・ステイの指定を取り除いて、まだ文が残っていればメモ。
+    「1完了、2完了」は何も残らないのでメモにならない。
+    """
+    done_ids, unresolved = parse_done(texts, mapping)
+    stay_ids: List[str] = []
+    memos: List[Tuple[str, str]] = []
+
+    for text in texts:
+        for m in RE_STAY.finditer(text or ""):
+            tid = resolve(m.group("key"), mapping)
+            if tid:
+                if tid not in stay_ids:
+                    stay_ids.append(tid)
+            else:
+                unresolved.append(m.group(0).strip())
+
+        for line in (text or "").splitlines():
+            # 「3 メモ」の形か、「4ステイ メモ」「1完了 メモ」のように指定で始まる形
+            lm = RE_MEMO_LINE.match(line)
+            head = RE_STAY.match(line) or RE_DONE.match(line)
+            if lm:
+                key = lm.group("key")
+            elif head:
+                key = head.group("key")
+            else:
+                continue
+            # 完了・ステイの指定を行から抜く
+            rest = line
+            for rx in (RE_DONE, RE_STAY):
+                # 「完了しました」「ステイです」の語尾もいっしょに抜く。残すとメモに見える
+                rest = re.sub(rx.pattern + CMD_TAIL, " ", rest)
+            rest = rest.strip()
+            # 先頭に番号だけ残っていれば外す（「3 山田さんに…」の 3）
+            rest = re.sub(rf"^{re.escape(key)}\s*(?:番)?(?:[.．、,)）:：])?", "", rest)
+            memo = rest.strip(MEMO_STRIP)
+            if not memo:
+                continue
+            tid = resolve(key, mapping)
+            if tid:
+                memos.append((tid, memo))
+            else:
+                unresolved.append(line.strip())
+
+    return done_ids, stay_ids, memos, unresolved
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
@@ -334,10 +462,11 @@ def cmd_complete(args: argparse.Namespace) -> int:
             "  番号指定を無視してIDだけ拾うなら --allow-no-mapping を付けてください。"
         )
 
-    ids, unresolved = parse_done(texts, mapping)
-    if not ids and not unresolved:
-        print("完了の返信はありませんでした。")
+    ids, stay_ids, memos, unresolved = parse_replies(texts, mapping)
+    if not (ids or stay_ids or memos or unresolved):
+        print("完了・ステイ・メモの返信はありませんでした。")
         return 0
+    thread_ts = get_thread(state).get("ts") or ""
 
     data = load(TASKS)
     index = {t["id"]: t for t in data["tasks"]}
@@ -358,14 +487,53 @@ def cmd_complete(args: argparse.Namespace) -> int:
         t["completed_at"] = stamp
         done.append(f"{tid} {t.get('title','')}")
 
-    if done:
+    # ステイ: status は変えない。翌朝必ず出す印を付け、回数を数える。
+    # 同じスレッドを二度読んでも回数が増えないよう、スレッドの ts で重複を弾く。
+    stayed: List[str] = []
+    for tid in stay_ids:
+        t = index.get(tid)
+        if t is None:
+            missing.append(tid)
+            continue
+        if t.get("status") in CLOSED:
+            already.append(f"{tid}（すでに {t['status']}。ステイは効きません）")
+            continue
+        if tid in {d.split()[0] for d in done}:
+            continue  # 同じ返信で完了とステイが両方あれば完了を優先
+        t["stay_pending"] = True
+        if not thread_ts or t.get("last_stay_ts") != thread_ts:
+            t["stay_count"] = int(t.get("stay_count") or 0) + 1
+            t["last_stay_ts"] = thread_ts
+        t["last_stay_at"] = stamp
+        stayed.append(f"{tid} {t.get('title','')}（{t['stay_count']}回目）")
+
+    # メモ: 同じスレッドの同じ文は二度足さない。
+    noted: List[str] = []
+    for tid, memo in memos:
+        t = index.get(tid)
+        if t is None:
+            missing.append(tid)
+            continue
+        history = t.setdefault("memos", [])
+        if any(h.get("text") == memo and h.get("thread_ts") == thread_ts for h in history):
+            continue
+        entry = {"at": stamp, "text": memo, "thread_ts": thread_ts}
+        history.append(entry)
+        t["last_memo"] = entry
+        noted.append(f"{tid} 📝 {memo}")
+
+    if done or stayed or noted:
         data["updated_at"] = stamp
         save(TASKS, data, args.dry_run)
 
     tag = "[dry-run] " if args.dry_run else ""
-    print(f"{tag}完了にした: {len(done)}件")
+    print(f"{tag}完了 {len(done)}件 / ステイ {len(stayed)}件 / メモ {len(noted)}件")
     for d in done:
         print("  done:", d)
+    for st in stayed:
+        print("  ステイ:", st)
+    for nt in noted:
+        print("  メモ:", nt)
     # 握りつぶさない。拾えなかったものは必ず出す。
     for a in already:
         print("  変更なし:", a)

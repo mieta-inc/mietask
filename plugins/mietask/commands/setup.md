@@ -77,15 +77,27 @@ cp "${CLAUDE_PLUGIN_ROOT}/templates/state.json" ~/.mietask/data/state.json
 見つからなければ管理者に聞く。
 自分のワークスペースで使う場合は `$P/../../README.md` の「Slack Appを作る」を見る。
 
-受け取ったら、本人に**ターミナルで**次を実行してもらう。
-**こちらが代わりに打たない。** トークンがこの会話に残らないようにするため。
+**入力欄のポップアップを出して、そこに貼ってもらう。** ターミナルは使わせない。
+先に本人へこう伝えてから実行する:
+
+> いまから入力欄が出ます。1Passwordの「ミエタスク Bot Token」をコピーして貼り付け、「保存」を押してください。
+
+```bash
+mkdir -p ~/.config/mietask && chmod 700 ~/.config/mietask && T=$(osascript -e 'text returned of (display dialog "1Passwordの「ミエタスク Bot Token」を貼り付けて「保存」を押してください" default answer "" with hidden answer with title "ミエタスク" buttons {"キャンセル", "保存"} default button "保存" cancel button "キャンセル")' 2>/dev/null) && [ -n "$T" ] && (umask 077; printf '%s' "$T" > ~/.config/mietask/slack-token) && unset T && echo OK || { unset T; echo "保存されませんでした（キャンセルか空欄）"; }
+```
+
+- トークンはシェルの変数を通ってファイルに入るだけで、**この会話にも出力にも出ない**
+- コマンドはこの形のまま実行する。`echo "$T"` のように中身を出す変更はしない
+- 「保存されませんでした」なら、もう一度実行してよいか本人に聞いてから出し直す
+
+`osascript` が無い環境（Windows など）だけ、ターミナルで次を打ってもらう。こちらは代わりに打たない:
 
 ```bash
 mkdir -p ~/.config/mietask && chmod 700 ~/.config/mietask
 read -rs TOKEN && printf '%s' "$TOKEN" > ~/.config/mietask/slack-token && chmod 600 ~/.config/mietask/slack-token && unset TOKEN && echo OK
 ```
 
-実行したら、**中身を見ずに**置けたことだけ確かめる:
+置けたら、**中身を見ずに**置けたことだけ確かめる:
 
 ```bash
 ls -l ~/.config/mietask/slack-token && head -c 5 ~/.config/mietask/slack-token && echo "... (xoxb- で始まっていればOK)"
@@ -102,19 +114,24 @@ ls -l ~/.config/mietask/slack-token && head -c 5 ~/.config/mietask/slack-token &
 
 **チャンネル名はワークスペース全体で一意。** 複数人が同じ名前を入れると衝突する。
 
-既定は `mietask-<メールの@より前>`。社内で重複しないので、これを勧める。
+既定は **`ミエタスク-<名字>`**。名字はメールの@より前を `.` で区切った最後の部分。
+`.` が無ければ@より前をそのまま使う。小文字にし、`_` はハイフンに直す。
 
 | メール | 既定の名前 |
 |---|---|
-| `shino.yamada@…` | `mietask-shino-yamada` |
-| `kaizuka@…` | `mietask-kaizuka` |
+| `yasuhiko.kawamura@…` | `ミエタスク-kawamura` |
+| `shino.yamada@…` | `ミエタスク-yamada` |
+| `kaizuka@…` | `ミエタスク-kaizuka` |
 
-`.` と `_` はハイフンに直し、小文字にする。本人が別名を希望したら従うが、
-**`mietask` のような共通の名前は止める。** 必ず誰のものか分かる名前にする。
+本人に「`#ミエタスク-kawamura` で作ります。よいですか」と確認してから作る。
+別名を希望したら従うが、**`ミエタスク` のような共通の名前は止める。** 必ず誰のものか分かる名前にする。
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --name mietask-shino-yamada
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --name ミエタスク-kawamura
 ```
+
+`invalid_name` で弾かれたら、英字の `mietask-<名字>` で作り直す（日本語のチャンネル名を
+受け付けないワークスペース設定があるため）。
 
 出力はこうなる。**`招待しました` が出ていることを必ず確かめる。**
 
@@ -135,7 +152,7 @@ Botが作ったプライベートチャンネルには**最初Botしかいない
 
 > `#<名前>` はすでにあります。これはご自身で作ったものですか？
 > - **自分のもの** → チャンネル名を右クリック→リンクをコピーして、末尾の `C0...` を教えてください
-> - **心当たりがない** → 別の名前にします（例: `mietask-<名字>-2`）
+> - **心当たりがない** → 名前も付けた形にします（例: `ミエタスク-shino-yamada`）
 
 自分のものだと確認できた場合だけ、IDを渡して使う:
 
@@ -172,7 +189,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --existing C0XXXXXXXXX
 `missing_scope` や `restricted_action` なら、無理に回避しない。次を案内して、
 IDをもらってから `--existing` で通す。
 
-> 1. Slackで**プライベートチャンネル**を作る（名前は `mietask-<自分の名前>`）
+> 1. Slackで**プライベートチャンネル**を作る（名前は `ミエタスク-<自分の名字>`）
 > 2. **自分だけを入れる。** 顧客名や依頼内容が流れるので、他の人がいる場所は使わない
 > 3. そのチャンネルで `/invite @ミエタスク` と打つ
 > 4. チャンネル名を右クリック→リンクをコピー→末尾の `C0XXXXXXXXX` を教えてもらう
@@ -237,11 +254,16 @@ ToolSearch("create scheduled task")
 > - 「これは要らない」と言う → 次から出なくなります
 > - `~/.mietask/config.json` の `exclude_senders` に送信元を足す
 
-あわせて使い方を3行で:
+あわせて使い方を伝える:
 
-> - 終わったら、その日のスレッドに「3完了」と返信する（翌朝に反映されます）
-> - 番号はその日限り。`t091完了` とIDで返してもOK
-> - 今すぐ見たいときは「タスク確認」と打つ
+> その日の投稿に返信すると、翌朝の一覧に反映されます。
+> - `1完了` → もう出ません
+> - `2ステイ` → 明日もそのまま出します
+> - `3 山田さんに電話済み` → 番号のあとにスペースを入れてメモ。翌朝「前回のメモ」として出ます
+> - `2ステイ 来週の会議で決める` → ステイとメモを同時に
+>
+> 番号はその日限りです。`t091完了` のようにIDで返してもかまいません。
+> 今すぐ見たいときは「タスク確認」と打ってください。
 
 ## やらないこと
 
