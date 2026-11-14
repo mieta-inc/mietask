@@ -1,0 +1,64 @@
+# mietask の自動テスト。
+# - Mac・Windows・Linux で読み取りルールと台帳の回帰テストを走らせる
+# - Windows では、配っている実行ファイルを Git Bash の入口から実際に動かす（メンバーの環境と同じ経路）
+# - 配っている実行ファイルが cli/ のソースから作ったものと一致するかを確かめる
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: cli/go.sum
+      - name: 回帰テスト
+        working-directory: cli
+        run: go vet ./... && go test ./...
+      - name: 配っている実行ファイルを入口から動かす
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          B=plugins/mietask/bin/mietask
+          bash "$B" version
+          export MIETASK_HOME="$RUNNER_TEMP/mh"
+          mkdir -p "$MIETASK_HOME/data"
+          printf '{"owner": {"slack_user_id": "U1", "name": "テスト"}}' > "$MIETASK_HOME/config.json"
+          printf '{"version": 1, "tasks": []}' > "$MIETASK_HOME/data/tasks.json"
+          printf '{}' > "$MIETASK_HOME/data/state.json"
+          T="$(bash "$B" paths tmp)"
+          printf '[{"title": "見積書 📝", "source": {"ref": "slack:a"}, "section": "today"}]' > "$T/f.json"
+          bash "$B" sync upsert --findings "$T/f.json" | tee out.txt
+          grep -q "1 → t001" out.txt
+          bash "$B" sync record --ts 1.1 --channel C1
+          printf '[{"user": "U1", "text": "1完了\\n追加 資料を作る 11/20まで"}]' > "$T/r.json"
+          bash "$B" sync complete --replies "$T/r.json" | tee out.txt
+          grep -q "完了 1件" out.txt
+          grep -q "追加 1件" out.txt
+          printf '{"parent": "テスト ⚠ 📝", "replies": ["返信案\\nx", "a"]}' > "$T/p.json"
+          bash "$B" post --payload "$T/p.json" --channel C1 --dry-run
+          bash "$B" team-payload --payload "$T/p.json" --name "テスト"
+
+  reproducible:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: cli/go.sum
+      - name: 実行ファイルがソースと一致するか
+        run: bash cli/build.sh --check

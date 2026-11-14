@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# mietask の入口。OS と CPU に合った実行ファイルを選んで動かす（Mac / Windows の Git Bash 共通）。
+#
+#   bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" <コマンド> [引数...]
+#
+# 実行ファイルは cli/ のソースから cli/build.sh で作り、このフォルダに置いてある。
+# 追加のインストール（Python など）は要らない。
+
+set -u
+_src="${BASH_SOURCE[0]}"
+case "$_src" in */*) HERE="$(cd "${_src%/*}" && pwd)" ;; *) HERE="$(pwd)" ;; esac
+
+case "$(uname -s 2>/dev/null)" in
+  Darwin) os=darwin ;;
+  MINGW* | MSYS* | CYGWIN*) os=windows ;;
+  Linux) os=linux ;;
+  *) echo "エラー: この OS では動きません（$(uname -s 2>/dev/null)）。Mac か Windows で使ってください。" >&2; exit 1 ;;
+esac
+case "$(uname -m 2>/dev/null)" in
+  arm64 | aarch64) arch=arm64 ;;
+  x86_64 | amd64 | i686) arch=amd64 ;;
+  *) arch=amd64 ;;
+esac
+
+exe="$HERE/mietask-$os-$arch"
+[ "$os" = windows ] && exe="$exe.exe"
+if [ ! -f "$exe" ] && [ "$os" = windows ] && [ "$arch" = arm64 ]; then
+  exe="$HERE/mietask-windows-amd64.exe" # Windows on ARM は x64 の実行ファイルを動かせる
+fi
+if [ ! -f "$exe" ]; then
+  echo "エラー: 実行ファイルが見つかりません: $exe" >&2
+  echo "  プラグインを入れ直してください（/plugin で mietask を更新）。" >&2
+  exit 1
+fi
+[ -x "$exe" ] || chmod +x "$exe" 2>/dev/null
+
+exec "$exe" "$@"
