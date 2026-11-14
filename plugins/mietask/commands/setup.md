@@ -73,7 +73,8 @@ cp "${CLAUDE_PLUGIN_ROOT}/templates/state.json" ~/.mietask/data/state.json
 
 **トークンの中身は画面に出さない。読み上げない。復唱しない。**
 
-すでに管理者がアプリを用意しているなら、その Bot Token をもらう。
+社内で使う場合は、**1Passwordの共有ボールトにある「ミエタスク Bot Token」**を取ってもらう。
+見つからなければ管理者に聞く。
 自分のワークスペースで使う場合は `$P/../../README.md` の「Slack Appを作る」を見る。
 
 受け取ったら、本人に**ターミナルで**次を実行してもらう。

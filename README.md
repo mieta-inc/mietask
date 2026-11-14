@@ -22,7 +22,7 @@
 |---|---|
 | Claude Code | 有料プランに入っていれば使える |
 | Slack・Gmail・Googleカレンダーの接続 | Claude Codeの設定から各自で繋ぐ |
-| Slack Bot Token | 社内なら管理者からもらう（下記） |
+| Slack Bot Token | 社内なら1Passwordの共有ボールト（下記） |
 
 **巡回は本人のアカウントで動く。** 他人のMacから代わりに回すことはできない。
 
@@ -40,7 +40,7 @@ Claude Code で3行打つだけ。
 
 答えるのは実質2つ:
 
-- **Botトークンを1回貼る**（管理者からもらう）
+- **Botトークンを1回貼る**（1Passwordの共有ボールトから取る）
 - **チャンネル名を確認する**（既定は `mietask-<メールの@より前>`）
 
 チャンネルはBotが自分で作る。`/invite` もIDのコピーも要らない。
@@ -98,7 +98,7 @@ Claude Code で3行打つだけ。
 
 ## Slack Appを作る（自分のワークスペースで使う場合）
 
-すでに管理者がアプリを用意していて、トークンを配ってもらえるなら、この節は不要。
+社内で使う場合はアプリが用意済みなので、この節は不要。
 
 1. https://api.slack.com/apps で Create New App → From scratch
 2. OAuth & Permissions → Bot Token Scopes に **`chat:write`**・**`chat:write.customize`**・**`groups:write`**・**`groups:read`** を追加
