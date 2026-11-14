@@ -63,13 +63,11 @@ def read_token(token_file: Optional[Path]) -> str:
         raise PostError(
             f"Botトークンが見つかりません: {path}\n"
             "  Claude Code で /mietask:setup と打つと、置くところまでやります。\n"
-            "  手で置く場合:\n"
-            f"    mkdir -p {path.parent} && chmod 700 {path.parent}\n"
-            f"    （トークンを {path} に保存）\n"
-            f"    chmod 600 {path}"
+            "  入力欄だけ出し直す場合: bash token_prompt.sh（scripts フォルダ内）"
         )
 
-    mode = path.stat().st_mode & 0o077
+    # Windows は権限の仕組みが違い、常に「他から読める」と出てしまうので見ない
+    mode = path.stat().st_mode & 0o077 if os.name != "nt" else 0
     if mode:
         print(
             f"警告: {path} が他ユーザーから読めます。chmod 600 を推奨します。",

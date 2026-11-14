@@ -94,3 +94,27 @@ def post_channel(default: str = "") -> str:
         return (load_config().get("slack") or {}).get("channel") or default
     except ConfigError:
         return default
+
+
+def tmp_dir() -> Path:
+    """巡回の途中で書く一時ファイルの置き場所。/tmp は Windows に無いのでホーム配下にそろえる。"""
+    d = home() / "tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+if __name__ == "__main__":
+    # スキルから絶対パスを得るために使う。Write ツールは ~ を展開しないため。
+    # Windows でも / 区切りで出す（C:/Users/...）。bash に渡したとき \ が消えないように
+    #   bash run.sh paths.py home   → データの置き場所
+    #   bash run.sh paths.py tmp    → 一時ファイルの置き場所（無ければ作る）
+    import sys
+
+    which = sys.argv[1] if len(sys.argv) > 1 else "home"
+    if which == "home":
+        print(home().as_posix())
+    elif which == "tmp":
+        print(tmp_dir().as_posix())
+    else:
+        print(f"不明な指定です: {which}（home か tmp）", file=sys.stderr)
+        sys.exit(2)

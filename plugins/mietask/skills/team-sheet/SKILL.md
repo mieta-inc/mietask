@@ -26,7 +26,8 @@ description: 管理者がチームメンバーの「抱えている案件・そ�
 
 ## 0. チームの設定を読む
 
-`~/.mietask/team.json`（`MIETASK_HOME` で変更可）。
+`~/.mietask/team.json`（`MIETASK_HOME` で変更可）。Readツールには `~` ではなく、
+`bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" paths.py home` が出す絶対パスを使う（Windows でも同じ）。
 
 ```json
 {

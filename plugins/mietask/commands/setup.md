@@ -7,7 +7,14 @@ mietask を使える状態にする。**本人と対話しながら進める。*
 
 所要10〜15分。途中で止まっても、もう一度 `/mietask:setup` と打てば続きからやり直せる。
 
-以下 `$P` = `${CLAUDE_PLUGIN_ROOT}`、`$H` = `~/.mietask` とする。
+以下 `$P` = `${CLAUDE_PLUGIN_ROOT}`、`$H` = データの置き場所（ふつうは `~/.mietask`）とする。
+
+**Mac でも Windows でも同じ手順で進める。** そのために次の2つを守る。
+
+- スクリプトは Python で直接呼ばず、必ず `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" <スクリプト名> [引数]` で呼ぶ。
+  環境ごとの Python の呼び方の違いと文字コードはこれが吸収する
+- Writeツールに渡すパスに `~` を使わない。1.5 で `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" paths.py home` を実行し、
+  出てきた絶対パスを `$H` として使う
 
 ---
 
@@ -37,6 +44,58 @@ Slackの検索ツールの説明文に `Current logged in user's user_id is U0XX
 
 繋がっていないものがあれば、**それが何で、どう繋ぐか**を伝えて止まる。
 接続は本人が画面でやる操作なので、こちらからはできない。
+
+## 1.5 Pythonを確かめる
+
+毎朝の台帳の更新とSlackへの投稿は Python のスクリプトが受け持つ。この端末で動くかを先に確かめる。
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" --check
+```
+
+`python: …（3.x.x）` が出れば次へ。`python: none` なら、**本人に説明して了承をとってから入れる。黙って入れない。**
+
+> 毎朝の処理に「Python」という無料のソフトが要ります。この端末にはまだ入っていないので、いまから入れてもよいですか？
+> 数分〜15分ほどかかり、途中で1回ボタンを押してもらいます。
+
+### Mac（`os: mac`）
+
+Apple の「コマンドライン・デベロッパ・ツール」に Python が含まれている。了承をとってから:
+
+```bash
+xcode-select --install
+```
+
+- 「インストールしますか？」のダイアログが出るので「インストール」を押してもらう。
+  利用許諾が出たら**本人が**「同意する」を押す（こちらでは押さない）
+- 5〜15分かかる。終わったと言われたら `--check` をやり直す
+- ダイアログが出ない・失敗した場合は、https://www.python.org/downloads/ から macOS 用のインストーラを入れてもらう
+
+### Windows（`os: windows`）
+
+`winget: yes` なら、了承をとってからこちらで実行する（管理者権限は要らない）:
+
+```bash
+winget install -e --id Python.Python.3.12 --scope user --accept-source-agreements --accept-package-agreements
+```
+
+- `--accept-…` は Python とインストール元の利用条件への同意。**了承をとる時点で、そのことも伝える**
+- 「このアプリがデバイスに変更を加えることを許可しますか？」が出たら「はい」を押してもらう
+- 終わったら `--check` をやり直す。入れた直後でも見つかるようにしてある
+
+`winget: no` なら、https://www.python.org/downloads/ から Windows 用のインストーラを入れてもらう。
+最初の画面で **「Add python.exe to PATH」にチェック**を入れてから「Install Now」。
+
+どちらでも、入れたあとに `python: none` のままなら、Claudeアプリを一度閉じて開き直し、
+`/mietask:setup` をやり直してもらう（途中から続く）。
+
+ここまで通ったら、データの置き場所を確かめておく:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" paths.py home
+```
+
+出てきた絶対パスを以下 `$H` とする。
 
 ## 2. 本人の情報を埋める
 
@@ -78,32 +137,26 @@ cp "${CLAUDE_PLUGIN_ROOT}/templates/state.json" ~/.mietask/data/state.json
 自分のワークスペースで使う場合は `$P/../../README.md` の「Slack Appを作る」を見る。
 
 **入力欄のポップアップを出して、そこに貼ってもらう。** ターミナルは使わせない。
-先に本人へこう伝えてから実行する:
+Mac でも Windows でも同じコマンドで、伏せ字の入力欄が出る。先に本人へこう伝えてから実行する:
 
 > いまから入力欄が出ます。1Passwordの「ミエタスク Bot Token」をコピーして貼り付け、「保存」を押してください。
 
 ```bash
-mkdir -p ~/.config/mietask && chmod 700 ~/.config/mietask && T=$(osascript -e 'text returned of (display dialog "1Passwordの「ミエタスク Bot Token」を貼り付けて「保存」を押してください" default answer "" with hidden answer with title "ミエタスク" buttons {"キャンセル", "保存"} default button "保存" cancel button "キャンセル")' 2>/dev/null) && [ -n "$T" ] && (umask 077; printf '%s' "$T" > ~/.config/mietask/slack-token) && unset T && echo OK || { unset T; echo "保存されませんでした（キャンセルか空欄）"; }
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/token_prompt.sh"
 ```
 
-- トークンはシェルの変数を通ってファイルに入るだけで、**この会話にも出力にも出ない**
-- コマンドはこの形のまま実行する。`echo "$T"` のように中身を出す変更はしない
+- トークンはこのスクリプトの中でファイルに保存されるだけで、**この会話にも出力にも出ない**。出力は `OK` か「保存されませんでした（…）」だけ
+- スクリプトを書き換えたり、中身を表示するコマンドを足したりしない
 - 「保存されませんでした」なら、もう一度実行してよいか本人に聞いてから出し直す
-
-`osascript` が無い環境（Windows など）だけ、ターミナルで次を打ってもらう。こちらは代わりに打たない:
-
-```bash
-mkdir -p ~/.config/mietask && chmod 700 ~/.config/mietask
-read -rs TOKEN && printf '%s' "$TOKEN" > ~/.config/mietask/slack-token && chmod 600 ~/.config/mietask/slack-token && unset TOKEN && echo OK
-```
+- 入力欄が見当たらないと言われたら、ほかのウィンドウの裏に隠れていないか見てもらう
 
 置けたら、**中身を見ずに**置けたことだけ確かめる:
 
 ```bash
-ls -l ~/.config/mietask/slack-token && head -c 5 ~/.config/mietask/slack-token && echo "... (xoxb- で始まっていればOK)"
+head -c 5 ~/.config/mietask/slack-token && echo "... (xoxb- で始まっていればOK)"
 ```
 
-`-rw-------` と `xoxb-` が出れば正しい。違えば置き直してもらう。
+`xoxb-` が出れば正しい。違えば置き直してもらう。
 
 ## 4. 投稿先のチャンネルを作る
 
@@ -127,7 +180,7 @@ ls -l ~/.config/mietask/slack-token && head -c 5 ~/.config/mietask/slack-token &
 別名を希望したら従うが、**`ミエタスク` のような共通の名前は止める。** 必ず誰のものか分かる名前にする。
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --name ミエタスク-kawamura
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" make_channel.py --name ミエタスク-kawamura
 ```
 
 `invalid_name` で弾かれたら、英字の `mietask-<名字>` で作り直す（日本語のチャンネル名を
@@ -157,7 +210,7 @@ Botが作ったプライベートチャンネルには**最初Botしかいない
 自分のものだと確認できた場合だけ、IDを渡して使う:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --existing C0XXXXXXXXX
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" make_channel.py --existing C0XXXXXXXXX
 ```
 
 これは**本人がそのチャンネルに入っているかを確かめてから**使う。
@@ -207,7 +260,7 @@ IDをもらってから `--existing` で通す。
 出すなら、チャンネル名を聞く（PDは `ミエタスク-pd`）。名前でIDを探す:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --find-team ミエタスク-pd
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" make_channel.py --find-team ミエタスク-pd
 ```
 
 `team_channel: C0XXXXXXXXX` が出たら、`$H/slack-post.json` に `"team_channel"` として足す
@@ -224,10 +277,10 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/make_channel.py" --find-team ミエタス
 本物の巡回をせず、投稿の経路だけを確かめる。
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_slack.py" --payload /tmp/mietask-hello.json --dry-run
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" post_slack.py --payload "$H/tmp/mietask-hello.json" --dry-run
 ```
 
-payloadは**Writeツールで** `/tmp/mietask-hello.json` に書く:
+payloadは**Writeツールで** `$H/tmp/mietask-hello.json` に書く（`$H` は絶対パスに置き換える。フォルダが無ければ `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" paths.py tmp` で作られる）:
 
 ```json
 {"parent": ":wave: mietask のセットアップが終わりました。明日の朝から毎日ここに届きます。", "replies": []}
@@ -236,7 +289,7 @@ payloadは**Writeツールで** `/tmp/mietask-hello.json` に書く:
 dry-run が通ったら、**本人に聞いてから**実際に投げる:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/post_slack.py" --payload /tmp/mietask-hello.json
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" post_slack.py --payload "$H/tmp/mietask-hello.json"
 ```
 
 Slackに届いたか本人に見てもらう。**届かなければここで止まる。**
@@ -269,13 +322,10 @@ ToolSearch("create scheduled task")
 
 **これは必ず言う。黙ってはいけない。**
 
-> **最初の1週間は外れが出ます。**
-> 除外ルールが空の状態から始まるので、通知メールを拾ったり、
-> 対応済みのものを出したりします。
->
-> 気づいたら次のどちらかで直してください。だんだん当たるようになります。
-> - 「これは要らない」と言う → 次から出なくなります
-> - `~/.mietask/config.json` の `exclude_senders` に送信元を足す
+> **最初の1週間で、自分用に育てていくものです。**
+> はじめは何も覚えていない状態なので、通知メールを拾ったり、対応済みのものを出したりします。
+> 要らないものが出たら、Claudeに「これは要らない」「〇〇からのメールは出さなくていい」と言ってください。
+> 次から出なくなり、だんだん自分に合った一覧になっていきます。
 
 あわせて使い方を伝える:
 

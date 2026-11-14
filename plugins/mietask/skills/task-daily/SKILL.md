@@ -14,7 +14,7 @@ description: Slack・Gmail・Googleカレンダーを巡回し、自分が対応
 | データ | `~/.mietask/`（`MIETASK_HOME` で変更可） |
 | 設定 | `~/.mietask/config.json` |
 
-**最初に `~/.mietask/config.json` を読む。** 本人の名前・メール・SlackユーザーID・
+**最初に `$H/config.json` を読む**（`$H` の求め方は下の「Mac でも Windows でも」を参照）。 本人の名前・メール・SlackユーザーID・
 投稿先チャンネル、および巡回の除外ルールがそこにある。
 
 設定が無ければセットアップが済んでいない。`/mietask:setup` を案内して止まる。
@@ -24,18 +24,30 @@ description: Slack・Gmail・Googleカレンダーを巡回し、自分が対応
 
 以下 `$S` = `${CLAUDE_PLUGIN_ROOT}/scripts` とする。
 
+**Mac でも Windows でも同じ手順で動かす。**
+
+- スクリプトは Python で直接呼ばず、必ず `bash "$S/run.sh" <スクリプト名> [引数]` で呼ぶ。パスは必ず `"…"` で囲む
+  （Python の呼び方の違いと文字コードを吸収する）
+- 一時ファイルは `/tmp` ではなく `$T` に書く。最初に次を実行し、出てきた絶対パスを `$H`・`$T` とする。
+  Writeツール・Readツールに渡すパスには `~` を使わず、この絶対パスを使う
+
+```
+bash "$S/run.sh" paths.py home
+bash "$S/run.sh" paths.py tmp
+```
+
 ---
 
 ## 1. 前日の返信を反映する
 
 ```
-python3 $S/task_sync.py thread
+bash "$S/run.sh" task_sync.py thread
 ```
 
 `ts` が出なければ初回。この節を飛ばして2へ。
 
 `ts` が出たら、そのスレッドを `slack_read_thread`（channel_id はその `channel`、
-message_ts はその `ts`）で読み、返信を次の形で `/tmp/task-replies.json` に書く。
+message_ts はその `ts`）で読み、返信を次の形で `"$T/task-replies.json"` に書く。
 **Writeツールで書く。heredoc や `cat >` は使わない。**
 
 ```json
@@ -46,7 +58,7 @@ message_ts はその `ts`）で読み、返信を次の形で `/tmp/task-replies
 Botが投げた子スレッドを本人の発言と取り違えると、無関係なタスクが done になる。
 
 ```
-python3 $S/task_sync.py complete --replies /tmp/task-replies.json
+bash "$S/run.sh" task_sync.py complete --replies "$T/task-replies.json"
 ```
 
 返信は次の3種類を受ける。スクリプトが判別するので、こちらで解釈し直さない。
@@ -86,7 +98,7 @@ python3 $S/task_sync.py complete --replies /tmp/task-replies.json
 
 ## 3. 台帳に登録する
 
-巡回で拾ったものを `/tmp/task-findings.json` に書く。**Writeツールで書く。**
+巡回で拾ったものを `"$T/task-findings.json"` に書く。**Writeツールで書く。**
 **表示したい順**（期限超過 → 今日中 → 今週中 → 予定の確認 → 相手待ち）に並べる。
 この配列の順が、そのまま表示番号 1, 2, 3… になる。
 
@@ -111,7 +123,7 @@ python3 $S/task_sync.py complete --replies /tmp/task-replies.json
 - **推測で金額・期限・担当者を埋めない。** 読み取れないなら notes に「要確認」と書く
 
 ```
-python3 $S/task_sync.py upsert --findings /tmp/task-findings.json
+bash "$S/run.sh" task_sync.py upsert --findings "$T/task-findings.json"
 ```
 
 出力の「表示番号 → task.id」を**そのまま使う。** 番号を自分で振り直さない。
@@ -179,7 +191,7 @@ GitHub記法ではない。間違えると記号がそのまま見える。
 
 ## 6. 投稿する
 
-payloadを **`/tmp/task-check-payload.json`** に書く。**Writeツールを使う。**
+payloadを **`"$T/task-check-payload.json"`** に書く。**Writeツールを使う。**
 
 ```json
 {"parent": "…", "replies": ["…", "…"]}
@@ -187,12 +199,12 @@ payloadを **`/tmp/task-check-payload.json`** に書く。**Writeツールを使
 
 まず中身を確認する:
 ```
-python3 $S/post_slack.py --payload /tmp/task-check-payload.json --dry-run
+bash "$S/run.sh" post_slack.py --payload "$T/task-check-payload.json" --dry-run
 ```
 
 警告が出たら payload を直してから、投稿する:
 ```
-python3 $S/post_slack.py --payload /tmp/task-check-payload.json
+bash "$S/run.sh" post_slack.py --payload "$T/task-check-payload.json"
 ```
 
 **自分専用チャンネルへの投稿は承認不要。** 設定済みの投稿先に出すのは想定内の動作。
@@ -203,7 +215,7 @@ python3 $S/post_slack.py --payload /tmp/task-check-payload.json
 **これを忘れると、翌朝の完了反映が動かない。**
 
 ```
-python3 $S/task_sync.py record --ts <出力されたts>
+bash "$S/run.sh" task_sync.py record --ts <出力されたts>
 ```
 
 ## 7.5 チームのまとめチャンネルにも出す（設定がある場合だけ）
@@ -212,8 +224,8 @@ python3 $S/task_sync.py record --ts <出力されたts>
 名前は `config.json` の `owner.name`。**中身はスクリプトに作らせる。** 組み立て直さない。
 
 ```
-python3 $S/team_payload.py --payload /tmp/task-check-payload.json --name "<owner.name>" > /tmp/task-team-payload.json
-python3 $S/post_slack.py --payload /tmp/task-team-payload.json --channel <team_channel>
+bash "$S/run.sh" team_payload.py --payload "$T/task-check-payload.json" --name "<owner.name>" > "$T/task-team-payload.json"
+bash "$S/run.sh" post_slack.py --payload "$T/task-team-payload.json" --channel <team_channel>
 ```
 
 親に名前が付き、本人向けの案内行と**返信案が外れる。** 一覧そのものは自分用と同じ。
@@ -238,7 +250,7 @@ python3 $S/post_slack.py --payload /tmp/task-team-payload.json --channel <team_c
 番号はその日の投稿の通し番号。まず対応を確かめてから動かす:
 
 ```
-python3 $S/task_sync.py thread
+bash "$S/run.sh" task_sync.py thread
 ```
 
 `mapping` の番号から task.id を引く（`t091` のようにIDで言われたらそのまま使う）。
@@ -248,6 +260,7 @@ python3 $S/task_sync.py thread
 | 「3は対応不要」「これは要らない」 | `task_sync.py status <id> --status dropped --note "本人: 対応不要"`。以後出ない |
 | 「3は来週にする」「今週はやらない」 | `task_sync.py status <id> --status later`。巡回で拾われたときだけ出る |
 | 「2は〇〇さん待ち」 | `task_sync.py status <id> --status blocked --note "〇〇さん待ち"`。相手待ちの欄に移る |
+| 「〇〇からのメールは出さなくていい」「このチャンネルは見なくていい」 | `$H/config.json` の `gmail.exclude_senders`（送信元のアドレス）か `slack.exclude_channels`（チャンネルID）に足す。**Editツールで、既存の項目は消さない。** 足す前に、何を足すかを本人に一言で確かめる。あわせて今出ている該当タスクは上の「対応不要」と同じく dropped にする |
 | 「3終わった」 | **ここでは done にしない。** その日の投稿に「3完了」と返信してもらう（完了は返信からだけ記録する作り） |
 
 - どれかわからないときは、タイトルを読み上げて確かめてから動かす

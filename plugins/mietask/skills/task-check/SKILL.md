@@ -44,7 +44,7 @@ ToolSearch("drive search files recent")
 
 ### 設定ファイルがあれば読む（任意）
 
-`~/.mietask/config.json` があれば読み、**除外ルールを必ず通します。**
+`~/.mietask/config.json`（絶対パスは `bash "${CLAUDE_PLUGIN_ROOT}/scripts/run.sh" paths.py home` で分かる）があれば読み、**除外ルールを必ず通します。**
 無ければ上の自動判別だけで進めます。どちらでも動きます。
 
 | 見るところ | 効き方 |
