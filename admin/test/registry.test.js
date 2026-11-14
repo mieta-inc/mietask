@@ -67,6 +67,7 @@ class FakeSlack {
   constructor() {
     this.channels = {}; // id → {name, members:Set, archived, messages:[]}
     this.dms = {};
+    this.strayDms = {};
     this.seq = 0;
     this.token = 'xoxb-good';
     this.rateLimitOnce = false;
@@ -113,6 +114,11 @@ class FakeSlack {
         if (/^U/.test(p.channel)) {
           if (this.dmFails) return { ok: false, error: 'missing_scope' };
           const ts = this.ts();
+          // 本物の Slack と同じく、表示名を指定すると Bot の入っていない別の場所に置かれ、Bot からは消せない
+          if (p.username) {
+            (this.strayDms[p.channel] = this.strayDms[p.channel] || []).push({ ts, text: p.text });
+            return { ok: true, channel: 'X' + p.channel, ts };
+          }
           (this.dms[p.channel] = this.dms[p.channel] || []).push({ ts, text: p.text });
           return { ok: true, channel: 'D' + p.channel, ts };
         }
@@ -124,6 +130,7 @@ class FakeSlack {
         return { ok: true, ts };
       }
       case 'chat.delete': {
+        if (String(p.channel).startsWith('X')) return { ok: false, error: 'channel_not_found' };
         if (String(p.channel).startsWith('D')) {
           const u = p.channel.slice(1);
           this.dms[u] = (this.dms[u] || []).filter(m => m.ts !== p.ts);
@@ -176,7 +183,15 @@ function load() {
           return { getResponseCode: () => 429, getHeaders: () => ({ 'Retry-After': '1' }), getContentText: () => '' };
         }
         const token = opts.headers.Authorization.replace('Bearer ', '');
-        const out = slack.handle(method, JSON.parse(opts.payload), token);
+        // 本物の Slack と同じく、読み取り系は JSON の本文を受け付けない
+        const isJSON = typeof opts.payload === 'string' || /json/.test(opts.contentType || '');
+        if (isJSON && /^conversations\.(info|members|list)$/.test(method)) {
+          return { getResponseCode: () => 200, getHeaders: () => ({}), getContentText: () => JSON.stringify({ ok: false, error: 'invalid_arguments' }) };
+        }
+        const raw = typeof opts.payload === 'string' ? JSON.parse(opts.payload) : opts.payload;
+        // フォーム形式では値はすべて文字列で届く
+        const params = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, String(v)]));
+        const out = slack.handle(method, params, token);
         return { getResponseCode: () => 200, getHeaders: () => ({}), getContentText: () => JSON.stringify(out) };
       },
     },
@@ -238,6 +253,7 @@ function issue(env, row) {
   env.ui.alerts.length = 0;
   env.ctx.menuIssueKey();
   const sid = env.ss.getSheetByName('メンバー').cells[row - 1][1];
+  assert.ok(!(env.slack.strayDms[sid] || []).length, '鍵の DM が Bot から消せない場所に送られた（表示名を指定している）');
   const dm = (env.slack.dms[sid] || []).slice(-1)[0];
   assert.ok(dm, '鍵の DM が届いていない: ' + env.ui.alerts.join(' / '));
   const key = dm.text.match(/```(mietask2\.[A-Za-z0-9_-]+)```/)[1];
@@ -270,6 +286,8 @@ test('鍵の発行から、投稿先の用意・投稿まで', () => {
   assert.strictEqual(cell(env, 'メンバー', 2, '投稿先'), s.channel);
   assert.strictEqual(env.slack.dms.U1.length, 0, '鍵の DM がセットアップ後に消えていない');
 
+  const chk = call(env, { id: k.i, k: k.k, action: 'check' });
+  assert.strictEqual(chk.channel.name, 'ミエタスク-yamada', '診断で投稿先を確かめられない: ' + JSON.stringify(chk.channel));
   const p = call(env, { id: k.i, k: k.k, action: 'post', channel: s.channel, parent: '親', replies: ['子1', '子2'], version: '0.5.0' });
   assert.ok(p.ok, JSON.stringify(p));
   const msgs = env.slack.channels[s.channel].messages;

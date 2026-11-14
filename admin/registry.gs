@@ -330,12 +330,16 @@ function botToken_() {
 
 function slack_(method, params) {
   var token = botToken_();
+  // フォーム形式で送る。conversations.info / members / list などの読み取り系は JSON の本文を受け付けない
+  var form = {};
+  Object.keys(params || {}).forEach(function (k) {
+    if (params[k] !== undefined && params[k] !== null) form[k] = String(params[k]);
+  });
   for (var attempt = 0; attempt < 4; attempt++) {
     var res = UrlFetchApp.fetch('https://slack.com/api/' + method, {
       method: 'post',
-      contentType: 'application/json; charset=utf-8',
       headers: { Authorization: 'Bearer ' + token },
-      payload: JSON.stringify(params),
+      payload: form,
       muteHttpExceptions: true,
     });
     var code = res.getResponseCode();
@@ -453,7 +457,8 @@ function issueKey_(ui, sel) {
     'Claude Code で `/mietask:setup` と打ち、入力欄が出たら、下の鍵をそのまま貼ってください。\n' +
     '```' + key + '```\n' +
     'この鍵はほかの人に渡さないでください。セットアップが終わると、このメッセージは自動で消えます。';
-  var r = slack_('chat.postMessage', { channel: m.slack_id, text: text, username: settings_(ss).bot_username || 'ミエタスク' });
+  // 表示名（username）は指定しない。指定すると Slack は Bot の入っていない別の DM に置き、あとで消せなくなる
+  var r = slack_('chat.postMessage', { channel: m.slack_id, text: text });
   if (r.ok) {
     props.setProperty('KEYMSG_' + m.slack_id, JSON.stringify({ channel: r.channel, ts: r.ts }));
     return m.name + ' さんに鍵を DM で送りました。前の鍵があれば、それはもう使えません。';
