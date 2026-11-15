@@ -371,13 +371,18 @@ func postPayloadFile(payloadPath, channelArg, tokenPath string, dryRun, beat boo
 	if channel == "" {
 		return &PostError{fmt.Sprintf("投稿先チャンネルが決まりません。--channel で渡すか、%s に {\"channel\": \"C...\"} を置いてください。", slackPostPath())}
 	}
+	// 控えるのは自分のチャンネルの ts だけ。まとめの ts と取り違えないよう見出しを分ける。
+	tsLabel := "ts"
+	if !beat {
+		tsLabel = "まとめの ts"
+	}
 	if relay := relayKeyFromFile(); relay != nil {
 		// 一人ずつの鍵：窓口が鍵と停止を確かめ、許された投稿先にだけ投稿する
 		rootTS, err := relayPost(relay, channel, parent, replies)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("ts: %s\n", rootTS)
+		fmt.Printf("%s: %s\n", tsLabel, rootTS)
 		if link := permalink(channel, rootTS); link != "" {
 			fmt.Printf("親メッセージ: %s\n", link)
 		}
@@ -398,7 +403,7 @@ func postPayloadFile(payloadPath, channelArg, tokenPath string, dryRun, beat boo
 		return err
 	}
 	// ts は sync record に渡す。翌朝この ts のスレッドを読んで完了を拾う。
-	fmt.Printf("ts: %s\n", rootTS)
+	fmt.Printf("%s: %s\n", tsLabel, rootTS)
 	if link := permalink(channel, rootTS); link != "" {
 		fmt.Printf("親メッセージ: %s\n", link)
 	}
