@@ -4,7 +4,7 @@
 // 追加のインストールなしで Mac・Windows で動くように、1本の実行ファイルにしてある。
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
-//	mietask post ...                                          Slackへ投稿（旧 post_slack.py）
+//	mietask post ...                                          Slackへ投稿（自分のチャンネル＋所属チームのまとめ）
 //	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
 //	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
 //	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
@@ -89,6 +89,7 @@ func usage() {
   sync status ID... --status S        タスクの status を変える
   sync record --ts TS                 投稿したスレッドの ts を控える
   post --payload FILE                 Slackへ親＋子スレッドを投稿する
+                                      （自分のチャンネル＋所属チームのまとめ。--no-team でまとめを止める）
   channel --name NAME                 投稿先のプライベートチャンネルを作る
   post-team --payload FILE            所属チームのまとめチャンネルへ投稿する（返信案は除く）
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
@@ -120,8 +121,16 @@ func run(argv []string) int {
 		code, err = runSync(rest)
 	case "post":
 		var a *args
-		if a, err = parseArgs(rest); err == nil {
+		if a, err = parseArgs(rest, "no-team"); err == nil {
 			err = cmdPost(a.get("payload"), a.get("channel"), a.get("token-file"), a.flags["dry-run"])
+			// 自分のチャンネルへ出せたら、続けて所属チームのまとめへも出す。
+			// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、
+			// --no-team を付けたときはしない。
+			if err == nil && a.get("channel") == "" && a.get("payload") != "" && !a.flags["no-team"] {
+				if terr := cmdPostTeam(a.get("payload"), "", a.flags["dry-run"]); terr != nil {
+					fmt.Fprintf(os.Stderr, "警告: まとめへの投稿に失敗しました。自分のチャンネルへの投稿は済んでいるので、やり直さないでください。\n%v\n", terr)
+				}
+			}
 		}
 	case "channel":
 		var a *args
