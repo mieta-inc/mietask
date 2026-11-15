@@ -5,7 +5,8 @@
 #   bash cli/build.sh            plugin.json の version を埋め込んで作る
 #   bash cli/build.sh --check    作らずに、置いてある実行ファイルがソースと一致するか確かめる（CI 用）
 #
-# -trimpath と固定のフラグで作るので、同じソース・同じ Go のバージョンなら同じファイルになる。
+# -trimpath・-buildvcs=false と固定のフラグで作るので、同じソース・同じ Go のバージョンなら
+# 同じファイルになる（コミットSHAは埋めない）。
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +23,9 @@ build_to() {
   for t in $TARGETS; do
     local os="${t%/*}" arch="${t#*/}" name="mietask-${t%/*}-${t#*/}"
     [ "$os" = windows ] && name="$name.exe"
-    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
+    # -buildvcs=false が要る。付けないと Go がコミットSHAを埋めるので、
+    # 「作ってコミット → そのコミットから作り直す」と中身が変わり、--check が必ず落ちる。
+    CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -buildvcs=false \
       -ldflags "-s -w -buildid= -X main.version=$VERSION" -o "$dir/$name" .
   done
 }
