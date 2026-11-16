@@ -81,12 +81,12 @@ class FakeSlack {
     this.calls.push(method);
     if (token !== this.token) return { ok: false, error: 'invalid_auth' };
     switch (method) {
-      case 'auth.test': return { ok: true, team: 'MIETA', user: 'mietask' };
+      case 'auth.test': return { ok: true, team: 'MIETA', user: 'mietask', user_id: 'BOT' };
       case 'conversations.create': {
         if (!/^[a-zぁ-んァ-ヶー一-龠0-9_-]+$/.test(p.name)) return { ok: false, error: 'invalid_name' };
         if (Object.values(this.channels).some(c => c.name === p.name)) return { ok: false, error: 'name_taken' };
         const id = 'C' + (100 + Object.keys(this.channels).length);
-        this.channels[id] = { name: p.name, members: new Set(['BOT']), archived: false, messages: [] };
+        this.channels[id] = { name: p.name, members: new Set(['BOT']), archived: false, private: p.is_private === 'true', messages: [] };
         return { ok: true, channel: { id, name: p.name } };
       }
       case 'conversations.invite': {
@@ -104,7 +104,7 @@ class FakeSlack {
         return { ok: true, channels: Object.entries(this.channels).filter(([, c]) => c.members.has('BOT') && !c.archived).map(([id, c]) => ({ id, name: c.name })) };
       case 'conversations.info': {
         const c = this.channels[p.channel];
-        return c ? { ok: true, channel: { name: c.name, is_archived: c.archived } } : { ok: false, error: 'channel_not_found' };
+        return c ? { ok: true, channel: { name: c.name, is_archived: c.archived, is_private: !!c.private } } : { ok: false, error: 'channel_not_found' };
       }
       case 'conversations.archive': {
         const c = this.channels[p.channel];
@@ -113,6 +113,12 @@ class FakeSlack {
         return { ok: true };
       }
       case 'chat.postMessage': {
+        if (/^DU/.test(p.channel)) { // DM のスレッドへの返信
+          const u = p.channel.slice(1);
+          const ts = this.ts();
+          (this.dms[u] = this.dms[u] || []).push({ ts, text: p.text, thread_ts: p.thread_ts });
+          return { ok: true, channel: p.channel, ts };
+        }
         if (/^U/.test(p.channel)) {
           if (this.dmFails) return { ok: false, error: 'missing_scope' };
           const ts = this.ts();
@@ -149,11 +155,84 @@ class FakeSlack {
   }
 }
 
+// ---------------------------------------------------------------- 偽の Notion
+
+const hex = s => String(s || '').replace(/-/g, '').toLowerCase();
+
+class FakeNotion {
+  constructor() {
+    this.token = 'ntn_good';
+    this.sources = {}; // id → pages[]
+    this.denied = new Set(); // インテグレーションが接続されていないデータベース
+    this.calls = [];
+  }
+  match(page, f) {
+    if (!f) return true;
+    if (f.and) return f.and.every(x => this.match(page, x));
+    if (f.or) return f.or.some(x => this.match(page, x));
+    const p = page.properties[f.property];
+    if (!p) throw new Error('validation_error: ' + f.property);
+    if (f.people) return (p.people || []).some(u => hex(u.id) === hex(f.people.contains));
+    if (f.status) return p.status && p.status.name === f.status.equals;
+    throw new Error('未対応の条件: ' + JSON.stringify(f));
+  }
+  handle(method, path, body, headers) {
+    this.calls.push({ method, path, body, version: headers['Notion-Version'] });
+    if (headers.Authorization !== 'Bearer ' + this.token) return [401, { object: 'error', code: 'unauthorized', message: 'API token is invalid.' }];
+    if (path === 'users/me') return [200, { object: 'user', type: 'bot', name: 'ミエタスク' }];
+    let m = path.match(/^data_sources\/([^/]+)\/query$/);
+    if (m && method === 'post') {
+      if (!this.sources[m[1]] || this.denied.has(m[1])) return [404, { object: 'error', code: 'object_not_found', message: 'Could not find data_source' }];
+      const all = this.sources[m[1]].filter(pg => this.match(pg, body.filter));
+      const from = Number(body.start_cursor || 0);
+      const size = body.page_size || 100;
+      const results = all.slice(from, from + size);
+      const more = from + size < all.length;
+      return [200, { results, has_more: more, next_cursor: more ? String(from + size) : null }];
+    }
+    m = path.match(/^pages\/([^/]+)$/);
+    if (m && method === 'get') {
+      for (const pages of Object.values(this.sources)) {
+        const pg = pages.find(x => hex(x.id) === hex(m[1]));
+        if (pg) return [200, pg];
+      }
+      return [404, { object: 'error', code: 'object_not_found', message: 'Could not find page' }];
+    }
+    return [400, { object: 'error', code: 'invalid_request_url', message: path }];
+  }
+}
+
+const people = ids => ({ type: 'people', people: ids.map(id => ({ object: 'user', id })) });
+const date = (start, end) => ({ type: 'date', date: start || end ? { start: start || null, end: end || null } : null });
+
+function project(id, name, o) {
+  return { object: 'page', id, properties: {
+    '': { type: 'title', title: [{ plain_text: name }] },
+    'CC担当': people(o.cc || []), 'PM担当': people(o.pm || []), 'SP担当': people(o.sp || []),
+    'プロジェクトリード': people(o.lead || []),
+    'ステータス': { type: 'status', status: { name: o.status || '進行中' } },
+    'プログラム種別': { type: 'select', select: o.kind ? { name: o.kind } : null },
+    '期間': date(o.start, o.end), '授業初日': date(o.first),
+  } };
+}
+
+function task(id, name, o) {
+  return { object: 'page', id, properties: {
+    'タスク名': { type: 'title', title: [{ plain_text: name }] },
+    '担当者': people(o.who || []),
+    'ステータス': { type: 'status', status: { name: o.status } },
+    'プログラム': { type: 'relation', relation: (o.projects || []).map(x => ({ id: x })), has_more: false },
+  } };
+}
+
 // ---------------------------------------------------------------- Apps Script の実行環境
 
 function load() {
   const ss = new Spreadsheet();
   const slack = new FakeSlack();
+  const notion = new FakeNotion();
+  const clock = { today: '2026-11-16', dow: '1' }; // 月曜
+  const triggers = [];
   const props = {};
   const ui = { alerts: [], dialogs: [], promptText: '', promptOk: true };
   const ctx = {
@@ -179,6 +258,11 @@ function load() {
     },
     UrlFetchApp: {
       fetch: (url, opts) => {
+        if (url.startsWith('https://api.notion.com/v1/')) {
+          const body = opts.payload ? JSON.parse(opts.payload) : {};
+          const [code, out] = notion.handle(opts.method, url.replace('https://api.notion.com/v1/', ''), body, opts.headers);
+          return { getResponseCode: () => code, getHeaders: () => ({}), getContentText: () => JSON.stringify(out) };
+        }
         const method = url.replace('https://slack.com/api/', '');
         if (slack.rateLimitOnce) {
           slack.rateLimitOnce = false;
@@ -203,15 +287,28 @@ function load() {
       DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
       computeDigest: (alg, s) => [...crypto.createHash('sha256').update(s, 'utf8').digest()].map(b => (b > 127 ? b - 256 : b)),
       base64EncodeWebSafe: s => Buffer.from(s, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
-      formatDate: () => '2026-11-16T07:00:00+09:00',
+      formatDate: (d, tz, fmt) => (fmt === 'yyyy-MM-dd' ? clock.today : fmt === 'u' ? clock.dow : '2026-11-16T07:00:00+09:00'),
     },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
     ContentService: { createTextOutput: t => ({ text: t, setMimeType() { return this; } }), MimeType: { JSON: 'json' } },
     HtmlService: { createHtmlOutput: h => ({ html: h, setWidth() { return this; }, setHeight() { return this; } }) },
+    ScriptApp: {
+      getProjectTriggers: () => triggers.slice(),
+      deleteTrigger: t => { triggers.splice(triggers.indexOf(t), 1); },
+      newTrigger: fn => {
+        const spec = { fn };
+        const b = {
+          timeBased: () => b, everyDays: n => { spec.everyDays = n; return b; }, atHour: h => { spec.hour = h; return b; },
+          inTimezone: tz => { spec.tz = tz; return b; },
+          create: () => { const t = { spec, getHandlerFunction: () => fn }; triggers.push(t); return t; },
+        };
+        return b;
+      },
+    },
   };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(process.env.REGISTRY_GS || path.join(__dirname, '..', 'registry.gs'), 'utf8'), ctx);
-  return { ctx, ss, slack, props, ui };
+  return { ctx, ss, slack, notion, clock, triggers, props, ui };
 }
 
 function seed(env) {
@@ -517,4 +614,213 @@ test('中身は doGet では返さない。壊れた要求には分かるエラ�
   assert.strictEqual(JSON.parse(env.ctx.doPost({ postData: { contents: '{' } }).text).error, 'bad_request');
   const k = issue(env, 2);
   assert.strictEqual(call(env, { id: k.i, k: k.k, action: 'nope' }).error, 'unknown_action');
+});
+
+// ---------------------------------------------------------------- チームのまとめ（MTD の案件と状態）
+
+const NU = n => `aaaaaaaa-0000-0000-0000-${String(n).padStart(12, '0')}`; // Notion のユーザーID
+const ME = NU(2), OTHER = NU(99);
+
+// pd チーム（管理者 UD）にまとめチャンネルを作り、MTD に U2 の案件とタスクを入れる
+function seedRollup(env) {
+  seed(env);
+  const members = env.ss.getSheetByName('メンバー');
+  const head = members.cells[0];
+  const put = r => members.appendRow(head.map(h => r[h] ?? ''));
+  members.cells[3][head.indexOf('Notion ユーザー')] = 'user://' + ME; // U2（pd）
+  put({ '名前': 'ひも付けなし', 'Slack ID': 'U3', 'チーム': 'pd', '状態': '有効' });
+  put({ '名前': 'MTDに無い人', 'Slack ID': 'U4', 'チーム': 'pd', '状態': '有効', 'Notion ユーザー': 'user://' + NU(4) });
+  put({ '名前': '停止の人', 'Slack ID': 'U5', 'チーム': 'pd', '状態': '停止', 'Notion ユーザー': 'user://' + NU(5) });
+  const teams = env.ss.getSheetByName('チーム');
+  teams.cells[4][teams.cells[0].indexOf('管理者')] = 'UD';
+  const st = env.ss.getSheetByName('設定');
+  st.cells.forEach(r => {
+    if (r[0] === 'system_admins') r[1] = 'UA';
+    if (r[0] === 'notion_projects') r[1] = 'collection://proj';
+    if (r[0] === 'notion_tasks') r[1] = 'collection://tasks';
+  });
+  select(env, 'チーム', 5);
+  env.ctx.menuCreateTeamChannel();
+  const channel = cell(env, 'チーム', 5, 'まとめチャンネル');
+  env.props.NOTION_TOKEN = 'ntn_good';
+  env.notion.sources.proj = [
+    project('b1000000-0000-0000-0000-000000000001', '26順天高1ゼミ', { cc: [ME], kind: 'ゼミ', start: '2026-04-01', end: '2027-03-31' }),
+    project('b1000000-0000-0000-0000-000000000002', '26広島学院 高1 FW', { cc: [ME], kind: 'FW', start: '2026-09-01', end: '2026-11-20' }),
+    project('b1000000-0000-0000-0000-000000000003', '大阪国際WS', { pm: [ME], kind: 'WS', start: '2026-10-01', end: '2026-12-04' }),
+    project('b1000000-0000-0000-0000-000000000004', '都立大崎', { sp: [ME], kind: 'WS', first: '2026-10-01' }),
+    project('b1000000-0000-0000-0000-000000000005', '1月開始WS', { cc: [ME], kind: 'WS', start: '2027-01-10', end: '2027-02-28' }),
+    project('b1000000-0000-0000-0000-000000000006', '中止した案件', { cc: [ME], kind: 'WS', status: '中止', start: '2026-10-01', end: '2027-01-01' }),
+    project('b1000000-0000-0000-0000-000000000007', '昔の案件', { cc: [ME], kind: 'WS', status: '完了', start: '2025-01-01', end: '2025-03-01' }),
+    project('b1000000-0000-0000-0000-000000000008', 'リードだけの案件', { lead: [ME], kind: 'WS', start: '2026-04-01', end: '2027-03-31' }),
+    project('b1000000-0000-0000-0000-000000000009', '他人の案件', { cc: [OTHER], kind: 'WS', start: '2026-04-01', end: '2027-03-31' }),
+  ];
+  const P = n => `b1000000-0000-0000-0000-00000000000${n}`;
+  env.notion.sources.tasks = [
+    task('t1', '2学期ワークシート最終化', { who: [ME], status: '進行中', projects: [P(1)] }),
+    task('t2', '中間プレゼン②スライド', { who: [ME], status: '確認待ち', projects: [P(1)] }),
+    task('t3', '講師コンテンツ', { who: [ME], status: '継続', projects: [P(1)] }),
+    task('t4', '動画修正', { who: [ME], status: '進行中' }),
+    task('t5', 'ワークシート作成', { who: [ME], status: '進行中', projects: [P(9)] }),
+    task('t6', '終わったタスク', { who: [ME], status: '完了', projects: [P(1)] }),
+    task('t7', 'まだのタスク', { who: [ME], status: '未着手', projects: [P(2)] }),
+    task('t8', '他人のタスク', { who: [OTHER], status: '進行中', projects: [P(1)] }),
+  ];
+  return channel;
+}
+
+test('チームのまとめ：MTDの案件と状態だけを、1人1行の一覧＋1人1スレッドで出す', () => {
+  const env = load();
+  const channel = seedRollup(env);
+  env.slack.channels[channel].members.add('UA'); // システム管理者は入っていてもよい
+  // 各自のミエタスクの件数が届いていても、まとめには使わない
+  const k = issue(env, 4);
+  call(env, { id: k.i, k: k.k, action: 'status', counts: { overdue: 7, today: 8, week: 9 } });
+
+  env.ctx.dailyRollup();
+  const msgs = env.slack.channels[channel].messages;
+  assert.strictEqual(msgs.length, 2, '親1本＋MTDに何かある人（1人）のスレッド1本のはず: ' + msgs.map(m => m.text).join('\n---\n'));
+  const [parent, detail] = msgs;
+  assert.strictEqual(detail.thread_ts, parent.ts);
+  assert.match(parent.text, /\*PDの状況\*　11\/16時点/);
+  assert.ok(parent.text.includes('• *別チーム*　4案件、うち2件が12/4までに終了予定、1件が始まる予定（最初は1/10）　:warning: 26順天高1ゼミ：中間プレゼン②スライド[確認待ち]'), parent.text);
+  assert.ok(parent.text.includes('• *ひも付けなし*　MTDとのひも付けが台帳に無く'), parent.text);
+  assert.ok(parent.text.includes('• *MTDに無い人*　MTDに担当案件もタスクもなく、ここからは見えない'), parent.text);
+  assert.ok(!parent.text.includes('停止の人'));
+  assert.ok(parent.text.includes('MTDの外の仕事は入っていません'));
+
+  const want = [
+    '■ *別チーム* — 4案件、うち2件が12/4までに終了予定、1件が始まる予定（最初は1/10）',
+    '・26順天高1ゼミ（CC・〜3/31）　今: 2学期ワークシート最終化、中間プレゼン②スライド、講師コンテンツ',
+    '・もうすぐ終わる: 26広島学院 高1 FW（11/20）、大阪国際WS（12/4）',
+    '・もうすぐ始まる: 1月開始WS（1/10〜）',
+    '・他に 都立大崎',
+    '・担当外の案件: 他人の案件（ワークシート作成）',
+    '・案件外: 動画修正',
+    '・詰まり: 26順天高1ゼミ：中間プレゼン②スライド[確認待ち]',
+    '・これまでの担当（MTD・終了分を含む）：WS 4・ゼミ 1・FW 1',
+  ];
+  assert.strictEqual(detail.text, want.join('\n'));
+  for (const t of [parent.text, detail.text]) {
+    assert.ok(!/中止した案件|リードだけ|終わったタスク|まだのタスク|他人のタスク|超過|:warning:超過/.test(t.replace(':warning: 26', '')), t);
+  }
+  // Notion にはバージョンを付けて問い合わせ、担当は CC・PM・SP だけで引く
+  assert.ok(env.notion.calls.length > 0 && env.notion.calls.every(c => c.version === '2025-09-03'));
+  const q = env.notion.calls.find(c => c.path === 'data_sources/proj/query');
+  assert.deepStrictEqual(q.body.filter.or.map(f => f.property), ['CC担当', 'PM担当', 'SP担当']);
+  assert.strictEqual(JSON.parse(env.props.ROLLUP_LAST).problems.length, 0);
+});
+
+test('チームのまとめ：管理者・システム管理者以外が入っている／公開チャンネルなら出さず、システム管理者に知らせる', () => {
+  const env = load();
+  const channel = seedRollup(env);
+  env.slack.channels[channel].members.add('U2'); // メンバー本人が入ってしまっている
+  assert.throws(() => env.ctx.dailyRollup(), /管理者・システム管理者以外/);
+  assert.strictEqual(env.slack.channels[channel].messages.length, 0, '投稿してしまった');
+  assert.match(env.slack.dms.UA.slice(-1)[0].text, /<@U2>.*投稿していません/s);
+
+  env.slack.channels[channel].members.delete('U2');
+  env.slack.channels[channel].private = false;
+  assert.throws(() => env.ctx.dailyRollup(), /公開チャンネル/);
+  assert.strictEqual(env.slack.channels[channel].messages.length, 0);
+});
+
+test('チームのまとめ：土日・祝日は出さない。Notion の鍵が無ければシステム管理者に知らせる', () => {
+  const env = load();
+  const channel = seedRollup(env);
+  env.clock.dow = '6';
+  env.ctx.dailyRollup();
+  env.clock.dow = '1';
+  env.clock.today = '2026-11-23'; // 勤労感謝の日（月曜）
+  env.ctx.dailyRollup();
+  assert.strictEqual(env.notion.calls.length, 0);
+  assert.strictEqual(env.slack.channels[channel].messages.length, 0);
+  env.clock.today = '2026-11-24';
+
+  env.clock.dow = '2';
+  delete env.props.NOTION_TOKEN;
+  assert.throws(() => env.ctx.dailyRollup(), /Notion の鍵/);
+  assert.match(env.slack.dms.UA.slice(-1)[0].text, /PD：Notion の鍵が設定されていません/);
+  assert.strictEqual(env.slack.channels[channel].messages.length, 0);
+});
+
+test('チームのまとめ：ページが分かれていても全部読む', () => {
+  const env = load();
+  seedRollup(env);
+  for (let i = 0; i < 130; i++) {
+    env.notion.sources.proj.push(project(`b2000000-0000-0000-0000-${String(i).padStart(12, '0')}`, '昔のゼミ' + i, { cc: [ME], kind: 'ゼミ', status: '完了', start: '2024-04-01', end: '2025-03-31' }));
+  }
+  env.ctx.dailyRollup();
+  const ch = cell(env, 'チーム', 5, 'まとめチャンネル');
+  assert.match(env.slack.channels[ch].messages[1].text, /ゼミ 131/);
+  assert.ok(env.notion.calls.some(c => c.path === 'data_sources/proj/query' && c.body.start_cursor === '100'), '2ページ目を読んでいない');
+});
+
+test('チームのまとめ：試しの実行はシステム管理者の DM にだけ届き、まとめチャンネルには出さない', () => {
+  const env = load();
+  const channel = seedRollup(env);
+  select(env, 'チーム', 5);
+  env.ui.alerts.length = 0;
+  env.ctx.menuTrialRollup();
+  assert.match(env.ui.alerts.pop(), /DM で送りました[\s\S]*出せる状態/);
+  assert.strictEqual(env.slack.channels[channel].messages.length, 0);
+  const dm = env.slack.dms.UA;
+  assert.match(dm[0].text, /^（試し・まとめチャンネルには出していません）\n:busts_in_silhouette: \*PDの状況\*/);
+  assert.strictEqual(dm.length, 2);
+  assert.strictEqual(dm[1].thread_ts, dm[0].ts);
+  assert.ok(!(env.slack.strayDms.UA || []).length, '表示名を付けて送り、Bot から消せない場所に置いた');
+});
+
+test('Notionの鍵：MTD を読めない鍵は保存しない', () => {
+  const env = load();
+  seedRollup(env);
+  delete env.props.NOTION_TOKEN;
+  env.ui.promptText = 'xoxb-wrong';
+  env.ctx.menuSetNotionToken();
+  assert.match(env.ui.alerts.pop(), /ntn_/);
+  env.ui.promptText = 'ntn_bad';
+  env.ctx.menuSetNotionToken();
+  assert.match(env.ui.alerts.pop(), /401[\s\S]*保存していません/);
+  assert.ok(!('NOTION_TOKEN' in env.props));
+
+  env.notion.denied.add('tasks'); // タスクDBにインテグレーションを接続し忘れた
+  env.ui.promptText = 'ntn_good';
+  env.ctx.menuSetNotionToken();
+  assert.match(env.ui.alerts.pop(), /タスクDBを読めません.*接続.*保存していません/);
+  assert.ok(!('NOTION_TOKEN' in env.props));
+
+  env.notion.denied.clear();
+  env.ctx.menuSetNotionToken();
+  assert.match(env.ui.alerts.pop(), /保存しました/);
+  assert.strictEqual(env.props.NOTION_TOKEN, 'ntn_good');
+});
+
+test('毎朝の仕組み：始めると平日9時の1本だけになり、止めると消える', () => {
+  const env = load();
+  seedRollup(env);
+  delete env.props.NOTION_TOKEN;
+  env.ctx.menuStartRollup();
+  assert.match(env.ui.alerts.pop(), /Notion の鍵/);
+  assert.strictEqual(env.triggers.length, 0);
+
+  env.props.NOTION_TOKEN = 'ntn_good';
+  env.ctx.menuStartRollup();
+  env.ctx.menuStartRollup();
+  assert.match(env.ui.alerts.pop(), /始めました[\s\S]*PD：出せる状態/);
+  assert.strictEqual(env.triggers.length, 1);
+  assert.deepStrictEqual(env.triggers[0].spec, { fn: 'dailyRollup', everyDays: 1, hour: 9, tz: 'Asia/Tokyo' });
+  env.ctx.menuStopRollup();
+  assert.match(env.ui.alerts.pop(), /止めました/);
+  assert.strictEqual(env.triggers.length, 0);
+});
+
+test('祝日：振替休日・国民の休日・移動する祝日も含めて、内閣府の一覧と同じになる', () => {
+  const env = load();
+  const list = y => Object.keys(env.ctx.jpHolidays_(y)).sort();
+  assert.deepStrictEqual(list(2026), ['2026-01-01', '2026-01-12', '2026-02-11', '2026-02-23', '2026-03-20', '2026-04-29',
+    '2026-05-03', '2026-05-04', '2026-05-05', '2026-05-06', '2026-07-20', '2026-08-11', '2026-09-21', '2026-09-22',
+    '2026-09-23', '2026-10-12', '2026-11-03', '2026-11-23']);
+  assert.deepStrictEqual(list(2027), ['2027-01-01', '2027-01-11', '2027-02-11', '2027-02-23', '2027-03-21', '2027-03-22',
+    '2027-04-29', '2027-05-03', '2027-05-04', '2027-05-05', '2027-07-19', '2027-08-11', '2027-09-20', '2027-09-23',
+    '2027-10-11', '2027-11-03', '2027-11-23']);
+  assert.strictEqual(env.ctx.isJpHoliday_('2026-11-16'), false);
 });
