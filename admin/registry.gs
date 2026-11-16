@@ -7,14 +7,21 @@
  *    メンバーは一人ずつ別の鍵を持つ。窓口は鍵を確かめてから、その人の代わりに Slack へ投稿する。
  *    Botトークンはこのスクリプトの中（スクリプト プロパティ）にだけ置き、メンバーには配らない。
  *    メンバーが投稿できるのは、本人の投稿先だけ。チームのまとめチャンネルには各自の一覧を出さない
- *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。各自からは毎朝の件数
- *    （超過・今日・今週）だけを受け取り、「日々の状態」シートに残す。件数は動作の点検用で、
+ *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。各自からは毎朝、
+ *    案件ごとの要約（案件名・状態・次の期限）を受け取り、チームのまとめに出す。同じものが本人のチャンネルにも出る。
+ *    あわせて件数（超過・今日・今週）も受け取り「日々の状態」シートに残す。件数は動作の点検用で、
  *    見られるのはシステム管理者だけ（チームの管理者の状態把握には使わない。案件ごとに重さが違うため）。
  *    台帳で「停止」にした人、鍵を無効にした人は、その時点から何もできなくなる。
  *
  * 2. 管理者のメニュー（スプレッドシートの「ミエタスク」メニュー）
  *    鍵の発行（Bot から本人に DM で届ける）、鍵の無効化、まとめチャンネルの作成、管理者の招待、
  *    退職者の投稿先の片付け。スプレッドシートを編集できる人が管理者になる。
+ *
+ * 3. チームのまとめ（平日の朝、まとめチャンネルへ。祝日は出さない）
+ *    MTD（Notion）のプログラムの案件と、各自のミエタスクが送る案件ごとの要約（社内の案件・リードしている仕事など、
+ *    MTD に出てこないもの）を合わせて、メンバーごとに出す。ミエタスクのタスクの題名・件数は使わない。
+ *    Notion の鍵はスクリプト プロパティ（NOTION_TOKEN）にだけ置く。
+ *    出す前に、まとめチャンネルが非公開で、参加者が管理者・システム管理者・Bot だけかを確かめる。
  *
  * ■ 最初の1回
  *   1. スプレッドシートの「拡張機能 → Apps Script」を開き、このファイルの中身を貼る
@@ -24,6 +31,9 @@
  *      出てきた URL を「設定」シートの relay_url に入れる
  *   4. スプレッドシートを開き直し、「ミエタスク → Botトークンを設定する」でトークンを入れる
  *   5. メンバーの行を選んで「ミエタスク → 選んだ人の鍵を発行する」
+ *   6. （チームのまとめを出すとき）Notion でインテグレーションを作り、MTD のプロジェクトDB・タスクDBに接続する。
+ *      「ミエタスク → Notionの鍵を設定する」で鍵を入れ、チームの行を選んで「まとめを試しに作る」で中身を確かめてから
+ *      「毎朝のまとめを始める」
  *
  * ■ シート（見出しの名前で列を探すので、列の並べ替えや列の追加をしても壊れない）
  *   メンバー: 名前 / Slack ID / メール / チーム / 状態 / Notion ユーザー / 投稿先 / 鍵 / 最後に動いた / バージョン / メモ
@@ -34,6 +44,9 @@
  *             親チームに pm と書けば、PM の管理者の画面に PM1 も入る。管理者は Slack ID をカンマ区切り
  *   日々の状態: 日付 / Slack ID / 名前 / 超過 / 今日 / 今週 / 届いた時刻
  *             各自のミエタスクが毎朝送る件数。このスクリプトが書く。件数のほかは受け取らない
+ *   案件の要約: 日付 / Slack ID / 名前 / 要約 / 届いた時刻
+ *             各自のミエタスクが毎朝送る、案件ごとの状態（案件名・状態・次の期限）。このスクリプトが書く。
+ *             タスクの題名・メールや DM の文面は受け取らない。チームのまとめと管理者の画面に出る
  *   設定:     項目 / 値
  *             relay_url（この窓口の URL）・workspace（Slack のワークスペース名）・bot_username・bot_icon_url・
  *             notion_projects・notion_tasks（MTD の場所）・
@@ -48,6 +61,7 @@ var SHEETS = {
   },
   teams: { name: 'チーム', headers: ['チームID', '表示名', '親チーム', 'まとめチャンネル', '管理者', 'メモ'] },
   daily: { name: '日々の状態', headers: ['日付', 'Slack ID', '名前', '超過', '今日', '今週', '届いた時刻'] },
+  shares: { name: '案件の要約', headers: ['日付', 'Slack ID', '名前', '要約', '届いた時刻'] },
   settings: { name: '設定', headers: ['項目', '値'] },
 };
 
@@ -156,6 +170,16 @@ var ACTIONS = {
     return {};
   },
 
+  // 案件ごとの要約を受け取る（チームのまとめに出す）。案件名・状態・次の期限だけを残し、ほかは捨てる。
+  // 本人の手元で、タスクの題名やメール・DM の文面を入れずに作ったもの。同じものが本人のチャンネルにも出ている
+  share: function (ctx, body) {
+    var items = cleanShare_(body.items);
+    var now = nowJst_();
+    upsertDaily_(ctx, SHEETS.shares, now.slice(0, 10), { '要約': JSON.stringify(items) }, now);
+    touch_(ctx, body);
+    return { items: items.length };
+  },
+
   // その日の件数（超過・今日・今週）を受け取る。システム管理者が動作を点検するのに使う
   // （急に0件になった人がいれば、巡回が壊れているかもしれない）。チームの管理者には見せない。
   // 件数のほか（題名・メモ・出どころ）は、送られてきても受け取らない。
@@ -261,6 +285,14 @@ function managedView_(ctx) {
     settings: { notion_projects: settings.notion_projects || '', notion_tasks: settings.notion_tasks || '' },
     system_admin: admin,
   };
+  // 案件ごとの要約（ミエタスクから）。担当チームの人の分だけ、直近8日以内のもの
+  var shares = latestShares_(ctx.ss);
+  var since8 = addDays_(nowJst_().slice(0, 10), -7);
+  out.shared = members.filter(function (m) { return shares[m.slack_id] && shares[m.slack_id].date >= since8; })
+    .map(function (m) {
+      var sh = shares[m.slack_id];
+      return { slack_id: m.slack_id, name: m.name, date: sh.date, at: sh.at, items: sh.items };
+    });
   if (admin) {
     // 点検用の件数はシステム管理者にだけ返す
     var since = addDays_(nowJst_().slice(0, 10), -7);
@@ -286,12 +318,16 @@ function count_(v) {
   return isFinite(n) && n >= 0 ? Math.min(n, 9999) : 0;
 }
 
-// 1人1日1行。同じ日に2回届いたら（手で回し直したときなど）上書きする
 function recordDaily_(ctx, date, counts, at) {
+  upsertDaily_(ctx, SHEETS.daily, date, counts, at);
+}
+
+// 1人1日1行。同じ日に2回届いたら（手で回し直したときなど）上書きする
+function upsertDaily_(ctx, def, date, fields, at) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    var sh = sheet_(ctx.ss, SHEETS.daily);
+    var sh = sheet_(ctx.ss, def);
     var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
     var col = indexOf_(head);
     var row = -1;
@@ -302,7 +338,7 @@ function recordDaily_(ctx, date, counts, at) {
       }
     }
     var rec = { '日付': date, 'Slack ID': ctx.member.slack_id, '名前': ctx.member.name, '届いた時刻': at };
-    Object.keys(counts).forEach(function (k) { rec[k] = counts[k]; });
+    Object.keys(fields).forEach(function (k) { rec[k] = fields[k]; });
     var line = head.map(function (h) { return h in rec ? rec[h] : ''; });
     if (row < 0) row = sh.getLastRow() + 1;
     // 日付を文字列のまま置く（スプレッドシートが日付に変えると、見た目が変わって同じ日を探せなくなる）
@@ -311,6 +347,40 @@ function recordDaily_(ctx, date, counts, at) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------- 案件の要約（ミエタスクから）
+
+var SHARE_STATES = ['動いている', '相手待ち', '期限が過ぎたものあり'];
+var SHARE_MAX = 12;
+
+// 決まった形のものだけを受け取る。リンク・メールアドレス・メンションは入れさせない（中身が漏れる入口になるため）
+function cleanShare_(raw) {
+  if (!Array.isArray(raw)) throw relayError_('bad_share', '要約（items）がありません');
+  if (raw.length > SHARE_MAX) throw relayError_('bad_share', '要約は' + SHARE_MAX + '件までです');
+  return raw.map(function (it, i) {
+    var where = 'items[' + i + ']';
+    var name = String((it && it.name) || '').trim();
+    if (!name) throw relayError_('bad_share', where + ' の案件名が空です');
+    if (name.length > 40) throw relayError_('bad_share', where + ' の案件名が長すぎます（40文字まで）');
+    if (/[\r\n<>@]|https?:/i.test(name)) throw relayError_('bad_share', where + ' の案件名に改行・リンク・メンション・メールアドレスは入れられません');
+    var state = String(it.state || '');
+    if (SHARE_STATES.indexOf(state) < 0) throw relayError_('bad_share', where + ' の状態は ' + SHARE_STATES.join('・') + ' のどれかです');
+    var due = String(it.due || '');
+    if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw relayError_('bad_share', where + ' の期限は yyyy-MM-dd です');
+    return { name: name, state: state, due: due };
+  });
+}
+
+// メンバーごとの最新の要約（Slack ID → {date, at, items}）
+function latestShares_(ss) {
+  var out = {};
+  rows_(ss, SHEETS.shares).forEach(function (r) {
+    var id = r['Slack ID'];
+    if (!id || (out[id] && out[id].date >= r['日付'])) return;
+    out[id] = { date: r['日付'], at: r['届いた時刻'], items: JSON.parse(r['要約'] || '[]') };
+  });
+  return out;
 }
 
 // 'yyyy-MM-dd' に日数を足す（暦の上の計算。時刻帯に左右されない）
@@ -457,7 +527,12 @@ function onOpen() {
     .addSeparator()
     .addItem('選んだ人の投稿先をアーカイブする（停止の人だけ）', 'menuArchiveMember')
     .addSeparator()
+    .addItem('選んだチームのまとめを試しに作る（システム管理者にDM）', 'menuTrialRollup')
+    .addItem('毎朝のまとめを始める（平日9時台）', 'menuStartRollup')
+    .addItem('毎朝のまとめを止める', 'menuStopRollup')
+    .addSeparator()
     .addItem('Botトークンを設定する', 'menuSetBotToken')
+    .addItem('Notionの鍵を設定する', 'menuSetNotionToken')
     .addItem('シートを整える', 'setupSheets')
     .addToUi();
 }
@@ -617,6 +692,579 @@ function setupSheets() {
   var defaults = { relay_url: '', workspace: '', bot_username: 'ミエタスク', bot_icon_url: '', notion_projects: '', notion_tasks: '', system_admins: '' };
   Object.keys(defaults).forEach(function (k) {
     if (!(k in have)) settings.appendRow([k, defaults[k]]);
+  });
+}
+
+// ================================================================ チームのまとめ（MTD の案件と状態）
+//
+// 平日の朝、チームごとに「誰がどの案件を持っていて、それぞれ今何を作っているか」をまとめチャンネルに出す。
+// 出どころは MTD（Notion のプロジェクトDBとタスクDB）だけ。各自のミエタスクの中身も件数も使わない
+// （題名に DM・非公開チャンネル・メールの内容が入るため。件数は案件ごとに重さが違い、状態を表さないため）。
+// MTD の外の仕事は見えないので、毎回そう書き添える。見立て（空く・余裕がある）は書かない。
+//
+// 投稿の前に、まとめチャンネルが非公開で、参加者が「そのチームの管理者・システム管理者・Bot」だけかを確かめる。
+// ほかの人が入っていたら投稿せず、システム管理者に DM で知らせる。
+
+var NOTION_VERSION = '2025-09-03';
+var ROLLUP_HOUR = 9; // 平日（祝日を除く）のこの時台に出す（時間主導のトリガーは時台の中のどこかで動く）
+var MOVING = ['進行中', '継続', '確認待ち']; // 今動いているタスク
+var STUCK = ['確認待ち', '保留']; // 詰まっていそうなタスク
+var ROLES = [['CC担当', 'CC'], ['PM担当', 'PM'], ['SP担当', 'SP'], ['プロジェクトリード', 'リード'], ['連携メンバー', '連携']];
+var COUNTED = ['CC', 'PM', 'SP']; // 並行の数に入れる役割（リード・連携は社内案件・手伝いが多いので、別に出す）
+var LIST_MAX = 5;
+var ROLLUP_FOOTER = '一人ずつの詳細はスレッドに。出どころはMTD（Notion）と、各自のミエタスクが送る案件ごとの要約です（タスクの題名・メールやDMの中身は入っていません）。';
+
+// ---------------------------------------------------------------- Notion
+
+function notionToken_() {
+  var t = PropertiesService.getScriptProperties().getProperty('NOTION_TOKEN');
+  if (!t) throw relayError_('no_notion_token', 'Notion の鍵が設定されていません（ミエタスク → Notionの鍵を設定する）');
+  return t;
+}
+
+function notion_(method, path, body) {
+  var opts = {
+    method: method,
+    headers: { Authorization: 'Bearer ' + notionToken_(), 'Notion-Version': NOTION_VERSION },
+    muteHttpExceptions: true,
+  };
+  if (body) { opts.contentType = 'application/json'; opts.payload = JSON.stringify(body); }
+  for (var attempt = 0; attempt < 4; attempt++) {
+    var res = UrlFetchApp.fetch('https://api.notion.com/v1/' + path, opts);
+    var code = res.getResponseCode();
+    if ((code === 429 || code >= 500) && attempt < 3) {
+      var wait = Number((res.getHeaders() || {})['Retry-After'] || 2);
+      Utilities.sleep(Math.min(Math.max(wait, 1), 30) * 1000);
+      continue;
+    }
+    var out = {};
+    try { out = JSON.parse(res.getContentText() || '{}'); } catch (err) { out = {}; }
+    if (code >= 400) {
+      var e = relayError_('notion_' + (out.code || code), 'Notion が断りました（' + code + (out.code ? ' ' + out.code : '') + '）' + (out.message ? '：' + out.message : ''));
+      e.status = code;
+      throw e;
+    }
+    return out;
+  }
+  throw relayError_('notion_unavailable', 'Notion が混んでいて読めませんでした');
+}
+
+function sourceId_(source) {
+  var id = String(source || '').replace(/^collection:\/\//, '').trim();
+  if (!id) throw relayError_('no_notion_source', '「設定」シートに MTD の場所（notion_projects・notion_tasks）がありません');
+  return id;
+}
+
+// 条件に合うページを全部読む（1人ぶんの案件・タスクなので、2000件で打ち切っても届かない）
+function notionQuery_(source, filter) {
+  var id = sourceId_(source);
+  var pages = [], cursor = null;
+  for (var i = 0; i < 20; i++) {
+    var body = { page_size: 100 };
+    if (filter) body.filter = filter;
+    if (cursor) body.start_cursor = cursor;
+    var r = notion_('post', 'data_sources/' + id + '/query', body);
+    pages = pages.concat(r.results || []);
+    if (!r.has_more || !r.next_cursor) break;
+    cursor = r.next_cursor;
+  }
+  return pages;
+}
+
+// Notion の ID は「-」の有無が混ざるので、比べるときは 32桁の小文字にそろえる
+function nid_(s) { return String(s || '').replace(/^user:\/\//, '').replace(/-/g, '').toLowerCase(); }
+
+function uuid_(s) {
+  var h = nid_(s);
+  if (!/^[0-9a-f]{32}$/.test(h)) return '';
+  return [h.slice(0, 8), h.slice(8, 12), h.slice(12, 16), h.slice(16, 20), h.slice(20)].join('-');
+}
+
+function richText_(arr) {
+  return (arr || []).map(function (t) { return t.plain_text || ''; }).join('').replace(/\s+/g, ' ').trim();
+}
+
+// 題名の列は名前が空のことがある（MTD のプロジェクトDB）ので、種類で探す
+function pageTitle_(page) {
+  var props = page.properties || {};
+  var keys = Object.keys(props);
+  for (var i = 0; i < keys.length; i++) if (props[keys[i]] && props[keys[i]].type === 'title') return richText_(props[keys[i]].title);
+  return '';
+}
+
+function prop_(page, name) {
+  var p = (page.properties || {})[name];
+  if (!p) return null;
+  switch (p.type) {
+    case 'people': return (p.people || []).map(function (u) { return nid_(u.id); });
+    case 'relation': return (p.relation || []).map(function (r) { return nid_(r.id); });
+    case 'status': return p.status ? p.status.name : '';
+    case 'select': return p.select ? p.select.name : '';
+    case 'date': return { start: String((p.date && p.date.start) || '').slice(0, 10), end: String((p.date && p.date.end) || '').slice(0, 10) };
+    case 'title': return richText_(p.title);
+    case 'rich_text': return richText_(p.rich_text);
+  }
+  return null;
+}
+
+function projectFromPage_(page, uid) {
+  var me = nid_(uid);
+  var period = prop_(page, '期間') || {}, first = prop_(page, '授業初日') || {};
+  return {
+    id: nid_(page.id),
+    name: pageTitle_(page) || '（名前なし）',
+    kind: prop_(page, 'プログラム種別') || '',
+    status: prop_(page, 'ステータス') || '',
+    roles: ROLES.filter(function (r) { return (prop_(page, r[0]) || []).indexOf(me) >= 0; }).map(function (r) { return r[1]; }),
+    start: period.start || first.start || '',
+    end: period.end || '',
+    first: first.start || '',
+  };
+}
+
+function taskFromPage_(page) {
+  return { name: pageTitle_(page) || '（名前なし）', status: prop_(page, 'ステータス') || '', projects: prop_(page, 'プログラム') || [] };
+}
+
+// MTD を読む道具。同じ人を何度も読まないよう、1回の実行の中で覚えておく
+function notionReader_(ss) {
+  var s = settings_(ss);
+  var cache = { projects: {}, tasks: {}, titles: {} };
+  var statuses = MOVING.concat(STUCK).filter(function (x, i, a) { return a.indexOf(x) === i; });
+  return {
+    projects: function (uid) {
+      var key = nid_(uid);
+      if (!cache.projects[key]) {
+        var id = uuid_(uid);
+        cache.projects[key] = notionQuery_(s.notion_projects, {
+          or: ROLES.map(function (r) { return { property: r[0], people: { contains: id } }; }),
+        }).map(function (pg) { return projectFromPage_(pg, uid); });
+      }
+      return cache.projects[key];
+    },
+    tasks: function (uid) {
+      var key = nid_(uid);
+      if (!cache.tasks[key]) {
+        cache.tasks[key] = notionQuery_(s.notion_tasks, {
+          and: [
+            { property: '担当者', people: { contains: uuid_(uid) } },
+            { or: statuses.map(function (st) { return { property: 'ステータス', status: { equals: st } }; }) },
+          ],
+        }).map(taskFromPage_);
+      }
+      return cache.tasks[key];
+    },
+    // 担当ではない案件の名前（そこでタスクを持っているとき）
+    title: function (pid) {
+      if (!(pid in cache.titles)) {
+        try { cache.titles[pid] = pageTitle_(notion_('get', 'pages/' + uuid_(pid))) || '（名前なし）'; }
+        catch (err) { cache.titles[pid] = '（読めない案件）'; }
+      }
+      return cache.titles[pid];
+    },
+  };
+}
+
+// ---------------------------------------------------------------- まとめの中身（ここは読むだけ。純粋な計算）
+
+function md_(ymd) {
+  var p = String(ymd || '').split('-');
+  return p.length === 3 ? Number(p[1]) + '/' + Number(p[2]) : '';
+}
+
+// 2か月より前・半年より先の日付は年も書く（「〜5/29」が去年か来年か分からなくなるため）
+function dateLabel_(ymd, today) {
+  if (!ymd) return '';
+  if (ymd < addDays_(today, -60) || ymd > addDays_(today, 180)) return Number(ymd.slice(0, 4)) + '/' + md_(ymd);
+  return md_(ymd);
+}
+
+function uniq_(arr) { return arr.filter(function (x, i) { return arr.indexOf(x) === i; }); }
+
+function capList_(items, sep) {
+  if (items.length <= LIST_MAX) return items.join(sep);
+  return items.slice(0, LIST_MAX).join(sep) + sep + '…他' + (items.length - LIST_MAX) + '件';
+}
+
+function byEnd_(a, b) { return (a.end || '9999') < (b.end || '9999') ? -1 : (a.end || '9999') > (b.end || '9999') ? 1 : 0; }
+function byStart_(a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; }
+
+// 1人ぶんの状態。期間で分ける（ステータスは期間が過ぎても「進行中」のままのことが多いため）
+function memberState_(projects, tasks, today, titleOf) {
+  var live = projects.filter(function (p) { return p.status !== '中止'; });
+  var mine = {};
+  live.forEach(function (p) { mine[p.id] = p; });
+  var isRun = function (p) {
+    return !!p.start && p.start <= today && (p.end ? p.end >= today : !!p.first && p.first >= addDays_(today, -120));
+  };
+  var counted = live.filter(function (p) { return p.roles.some(function (r) { return COUNTED.indexOf(r) >= 0; }); });
+  var running = counted.filter(isRun).sort(byEnd_);
+  var leading = live.filter(function (p) { return counted.indexOf(p) < 0 && isRun(p); }).sort(byEnd_);
+  var starting = counted.filter(function (p) { return p.start > today && p.start <= addDays_(today, 60); }).sort(byStart_);
+  var ending = running.filter(function (p) { return p.end && p.end <= addDays_(today, 30); });
+  // 期間が過ぎた案件（タスクが閉じられずに残っていることが多い。今の仕事としては数えない）
+  var past = {};
+  live.forEach(function (p) { if (!isRun(p) && p.start && p.start <= today) past[p.id] = true; });
+
+  var moving = {}, elsewhere = {}, outside = [], stuck = [];
+  tasks.forEach(function (t) {
+    var pids = t.projects.length ? t.projects : [''];
+    pids.forEach(function (pid) {
+      var where = !pid ? '' : mine[pid] ? mine[pid].name : titleOf(pid);
+      if (STUCK.indexOf(t.status) >= 0) stuck.push({ where: where, task: t.name, status: t.status });
+      if (MOVING.indexOf(t.status) < 0) return;
+      if (!pid) outside.push(t.name);
+      else if (mine[pid]) (moving[pid] = moving[pid] || []).push(t.name);
+      else (elsewhere[pid] = elsewhere[pid] || { name: where, tasks: [] }).tasks.push(t.name);
+    });
+  });
+
+  var history = {};
+  counted.forEach(function (p) { if (p.kind) history[p.kind] = (history[p.kind] || 0) + 1; });
+  var others = outside.length + Object.keys(elsewhere).reduce(function (n, k) { return n + elsewhere[k].tasks.length; }, 0);
+  return { today: today, projects: live, running: running, leading: leading, starting: starting, ending: ending, past: past,
+    moving: moving, elsewhere: elsewhere, outside: uniq_(outside), others: others, stuck: stuck, history: history,
+    hasTasks: tasks.length > 0 };
+}
+
+function mtdEmpty_(st) { return !st || (!st.projects.length && !st.hasTasks); }
+
+// MTD の分の「並行の数と予定」。事実だけで、見立ては書かない
+function mtdSummary_(st) {
+  if (mtdEmpty_(st)) return 'MTDに担当なし';
+  var parts = [st.running.length ? 'MTD ' + st.running.length + '案件' : 'MTDの担当案件なし'];
+  if (st.ending.length) parts.push('うち' + st.ending.length + '件が' + md_(st.ending[st.ending.length - 1].end) + 'までに終了予定');
+  if (st.starting.length) parts.push(st.starting.length + '件が始まる予定（最初は' + md_(st.starting[0].start) + '）');
+  if (st.leading.length) parts.push('リード・連携' + st.leading.length + '件');
+  if (!st.running.length && !st.leading.length && st.others) parts.push('担当外の案件・案件外で動いているタスクあり');
+  return parts.join('、');
+}
+
+// ミエタスクの分。届いていなければそう書く（空いているとは書かない）
+function shareSummary_(sh, today) {
+  if (!sh) return '';
+  if (sh.date !== today) return 'ミエタスクは' + md_(sh.date) + 'から届いていない';
+  if (!sh.items.length) return 'ほかの案件なし（ミエタスク）';
+  var names = sh.items.map(function (i) { return i.name; });
+  return 'ほかに' + names.length + '案件（' + names.slice(0, 3).join('、') + (names.length > 3 ? ' ほか' : '') + '）';
+}
+
+// 一覧の1行と、スレッドの見出しに使う
+function memberLine_(st, sh, today, linked) {
+  var mtd = linked ? mtdSummary_(st) : 'MTDのひも付けなし（システム管理者が対応）';
+  var share = shareSummary_(sh, today);
+  if (linked && mtdEmpty_(st) && !share) return 'MTDに担当なし。ミエタスクの要約も届いておらず、ここからは見えない';
+  return [mtd, share].filter(String).join('／');
+}
+
+function stuckLabel_(s) { return (s.where ? s.where + '：' : '') + s.task + '[' + s.status + ']'; }
+
+function mtdDetail_(st) {
+  if (mtdEmpty_(st)) return ['・担当なし'];
+  var lines = [];
+  var shown = {};
+  var withTasks = st.projects.filter(function (p) { return st.moving[p.id] && !st.past[p.id]; }).sort(byEnd_);
+  withTasks.forEach(function (p, i) {
+    shown[p.id] = true;
+    if (i >= LIST_MAX) return;
+    var when = p.end ? '〜' + dateLabel_(p.end, st.today) : p.start ? dateLabel_(p.start, st.today) + '〜' : '';
+    var tag = [p.roles.join('・'), when].filter(String).join('・');
+    lines.push('・' + p.name + (tag ? '（' + tag + '）' : '') + '　今: ' + capList_(st.moving[p.id], '、'));
+  });
+  if (withTasks.length > LIST_MAX) lines.push('・…他' + (withTasks.length - LIST_MAX) + '件（今動いているタスクのある案件）');
+  var end = st.ending.filter(function (p) { return !shown[p.id]; });
+  if (end.length) lines.push('・もうすぐ終わる: ' + capList_(end.map(function (p) { shown[p.id] = true; return p.name + '（' + md_(p.end) + '）'; }), '、'));
+  var start = st.starting.filter(function (p) { return !shown[p.id]; });
+  if (start.length) lines.push('・もうすぐ始まる: ' + capList_(start.map(function (p) { shown[p.id] = true; return p.name + '（' + md_(p.start) + '〜）'; }), '、'));
+  var rest = st.running.filter(function (p) { return !shown[p.id]; });
+  if (rest.length) lines.push('・他に ' + capList_(rest.map(function (p) { return p.name; }), '、'));
+  var lead = st.leading.filter(function (p) { return !shown[p.id]; });
+  if (lead.length) lines.push('・リード・連携: ' + capList_(lead.map(function (p) { return p.name + '（' + p.roles.join('・') + '）'; }), '、'));
+  var other = Object.keys(st.elsewhere).map(function (k) { return st.elsewhere[k]; });
+  if (other.length) lines.push('・担当外の案件: ' + capList_(other.map(function (o) { return o.name + '（' + o.tasks.length + '件）'; }), '、'));
+  if (st.outside.length) lines.push('・案件外: ' + capList_(st.outside, '、'));
+  if (st.stuck.length) lines.push('・詰まり: ' + capList_(st.stuck.map(stuckLabel_), '、'));
+  var stale = st.projects.filter(function (p) { return st.moving[p.id] && st.past[p.id]; }).sort(byEnd_);
+  if (stale.length) {
+    lines.push('・期間が過ぎてもタスクが動いている案件: ' + capList_(stale.map(function (p) {
+      return p.name + (p.end ? '（〜' + dateLabel_(p.end, st.today) + '）' : '');
+    }), '、'));
+  }
+  var kinds = Object.keys(st.history).sort(function (a, b) { return st.history[b] - st.history[a]; });
+  if (kinds.length) lines.push('・これまでの担当（MTD・終了分を含む）：' + kinds.map(function (k) { return k + ' ' + st.history[k]; }).join('・'));
+  return lines;
+}
+
+function shareItemLine_(it, today) {
+  return '・' + it.name + ' — ' + it.state + (it.due ? '（次の期限 ' + dateLabel_(it.due, today) + '）' : '');
+}
+
+function shareDetail_(sh, today) {
+  if (sh.date !== today) return ['*ミエタスクから*', '・' + md_(sh.date) + 'から届いていない（毎朝の実行が止まっているかもしれない）'];
+  var at = String(sh.at || '').slice(11, 16);
+  var head = '*ミエタスクから*（' + md_(sh.date) + (at ? ' ' + at.replace(/^0/, '') : '') + '時点）';
+  if (!sh.items.length) return [head, '・MTDのほかの案件なし'];
+  return [head].concat(sh.items.map(function (it) { return shareItemLine_(it, today); }));
+}
+
+function memberDetail_(m, st, sh, today, linked) {
+  var lines = ['■ *' + m.name + '* — ' + memberLine_(st, sh, today, linked)];
+  if (linked) lines = lines.concat(['*MTDから*'], mtdDetail_(st));
+  if (sh) lines = lines.concat(shareDetail_(sh, today));
+  return fit_(lines);
+}
+
+// Slack の上限を超えないように、末尾の行から削る
+function fit_(lines) {
+  var out = lines.slice();
+  var cut = 0;
+  while (out.join('\n').length > MAX_TEXT - 40 && out.length > 1) { out.pop(); cut++; }
+  if (cut) out.push('…（長いので' + cut + '行を省きました）');
+  return out.join('\n');
+}
+
+function teamMembers_(ss, team) {
+  var ids = {};
+  subtree_(allTeams_(ss), team.id).forEach(function (id) { ids[id.toLowerCase()] = true; });
+  return rows_(ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); })
+    .filter(function (m) { return m.slack_id && m.status !== STOPPED && m.teams.some(function (t) { return ids[t.toLowerCase()]; }); });
+}
+
+// チーム1つぶんの投稿（親1本＋1人1スレッド）を作る
+function buildRollup_(ss, team, today, reader) {
+  var members = teamMembers_(ss, team);
+  var shares = latestShares_(ss);
+  var lines = [], replies = [];
+  members.forEach(function (m) {
+    var linked = !!nid_(m.notion_user);
+    var st = linked ? memberState_(reader.projects(m.notion_user), reader.tasks(m.notion_user), today, reader.title) : null;
+    var sh = shares[m.slack_id] || null;
+    var line = '• *' + m.name + '*　' + memberLine_(st, sh, today, linked);
+    if (st && st.stuck.length) line += '　:warning: ' + stuckLabel_(st.stuck[0]) + (st.stuck.length > 1 ? ' ほか' + (st.stuck.length - 1) + '件' : '');
+    lines.push(line);
+    if (!mtdEmpty_(st) || sh) replies.push(memberDetail_(m, st, sh, today, linked));
+  });
+  var head = ':busts_in_silhouette: *' + (team.name || team.id) + 'の状況*　' + md_(today) + '時点';
+  var parent = fit_([head, ''].concat(lines.length ? lines : ['対象のメンバーがいません'], ['', ROLLUP_FOOTER]));
+  return { parent: parent, replies: replies, members: members.length };
+}
+
+// ---------------------------------------------------------------- 出す場所の確かめと投稿
+
+// まとめチャンネルに出してよいか。問題があれば理由を返す（無ければ空文字）
+function audienceProblem_(ss, team) {
+  var info = slack_('conversations.info', { channel: team.channel });
+  if (!info.ok) return 'まとめチャンネルを確かめられません（' + info.error + '）';
+  if (info.channel.is_archived) return 'まとめチャンネルがアーカイブされています';
+  if (!info.channel.is_private) return 'まとめチャンネルが公開チャンネルです（非公開にしか出しません）';
+  var bot = slack_('auth.test', {});
+  var allowed = team.managers.concat(list_(settings_(ss).system_admins), [bot.user_id || '']);
+  var outsiders = [], cursor = '';
+  for (var i = 0; i < 10; i++) {
+    var p = { channel: team.channel, limit: 200 };
+    if (cursor) p.cursor = cursor;
+    var r = slack_('conversations.members', p);
+    if (!r.ok) return 'まとめチャンネルの参加者を確かめられません（' + r.error + '）';
+    (r.members || []).forEach(function (u) { if (allowed.indexOf(u) < 0) outsiders.push(u); });
+    cursor = (r.response_metadata || {}).next_cursor || '';
+    if (!cursor) break;
+  }
+  if (outsiders.length) {
+    return 'まとめチャンネルに管理者・システム管理者以外の人がいます（' + outsiders.map(function (u) { return '<@' + u + '>'; }).join(' ') + '）';
+  }
+  return '';
+}
+
+function postRollup_(ss, channel, r) {
+  var ts = postMessage_(ss, channel, r.parent, null);
+  r.replies.forEach(function (t) {
+    Utilities.sleep(1100);
+    postMessage_(ss, channel, t, ts);
+  });
+  return ts;
+}
+
+// システム管理者に DM で送る（試しの実行と、失敗の知らせ）。表示名は指定しない（鍵の DM と同じ理由）
+function dmAdmins_(ss, parent, replies) {
+  var admins = list_(settings_(ss).system_admins);
+  if (!admins.length) throw new Error('「設定」シートの system_admins にシステム管理者の Slack ID がありません');
+  admins.forEach(function (u) {
+    var r = slack_('chat.postMessage', { channel: u, text: parent, unfurl_links: false });
+    if (!r.ok) throw new Error('システム管理者（' + u + '）に DM を送れませんでした（' + r.error + '）');
+    (replies || []).forEach(function (t) {
+      Utilities.sleep(1100);
+      var c = slack_('chat.postMessage', { channel: r.channel, text: t, thread_ts: r.ts, unfurl_links: false });
+      if (!c.ok) throw new Error('システム管理者（' + u + '）への DM の続きを送れませんでした（' + c.error + '）');
+    });
+  });
+  return admins;
+}
+
+function todayJst_() { return Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd'); }
+
+// ---------------------------------------------------------------- 祝日（国民の祝日に関する法律のとおりに計算する）
+//
+// カレンダーの権限を増やさず、ネットにも頼らないよう、計算で出す。春分・秋分は 2099年まで使える近似式。
+// 法律が変わったとき（特例の移動など）はここを直す。会社の休み（年末年始など）は入っていない。
+
+function ymd_(y, m, d) {
+  var t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() + '-' + ('0' + (t.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + t.getUTCDate()).slice(-2);
+}
+
+function weekday_(ymd) {
+  var p = String(ymd).split('-').map(Number);
+  return new Date(Date.UTC(p[0], p[1] - 1, p[2])).getUTCDay(); // 0=日 … 6=土
+}
+
+// m月の第n月曜
+function nthMonday_(y, m, n) {
+  var first = new Date(Date.UTC(y, m - 1, 1)).getUTCDay();
+  return ymd_(y, m, 1 + ((8 - first) % 7) + (n - 1) * 7);
+}
+
+function jpHolidays_(y) {
+  var k = Math.floor((y - 1980) / 4);
+  var base = [
+    ymd_(y, 1, 1), nthMonday_(y, 1, 2), ymd_(y, 2, 11), ymd_(y, 2, 23),
+    ymd_(y, 3, Math.floor(20.8431 + 0.242194 * (y - 1980)) - k), // 春分の日
+    ymd_(y, 4, 29), ymd_(y, 5, 3), ymd_(y, 5, 4), ymd_(y, 5, 5),
+    nthMonday_(y, 7, 3), ymd_(y, 8, 11), nthMonday_(y, 9, 3),
+    ymd_(y, 9, Math.floor(23.2488 + 0.242194 * (y - 1980)) - k), // 秋分の日
+    nthMonday_(y, 10, 2), ymd_(y, 11, 3), ymd_(y, 11, 23),
+  ];
+  var set = {};
+  base.forEach(function (d) { set[d] = true; });
+  // 国民の休日：前日と翌日が祝日の日
+  base.forEach(function (d) {
+    var mid = addDays_(d, 1);
+    if (!set[mid] && set[addDays_(d, 2)]) set[mid] = true;
+  });
+  // 振替休日：祝日が日曜なら、そのあとの最初の祝日でない日
+  base.forEach(function (d) {
+    if (weekday_(d) !== 0) return;
+    var next = addDays_(d, 1);
+    while (set[next]) next = addDays_(next, 1);
+    set[next] = true;
+  });
+  return set;
+}
+
+function isJpHoliday_(ymd) {
+  return !!jpHolidays_(Number(String(ymd).slice(0, 4)))[ymd];
+}
+
+/** 時間主導のトリガーから呼ばれる。土日・祝日は出さない */
+function dailyRollup() {
+  var dow = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'u'); // 1=月 … 7=日
+  if (dow === '6' || dow === '7') return;
+  var today = todayJst_();
+  if (isJpHoliday_(today)) return;
+  var problems = runRollups_(SpreadsheetApp.getActiveSpreadsheet(), today);
+  // 失敗はシステム管理者に DM で知らせたうえで、実行ログにも失敗として残す（トリガーの失敗通知メールが届く）
+  if (problems.length) throw new Error('チームのまとめで問題がありました: ' + problems.join(' / '));
+}
+
+function runRollups_(ss, today) {
+  var reader = notionReader_(ss);
+  var teams = allTeams_(ss).filter(function (t) { return t.channel; });
+  var problems = [], done = [];
+  teams.forEach(function (team) {
+    try {
+      var why = audienceProblem_(ss, team);
+      if (why) { problems.push((team.name || team.id) + '：' + why + '。投稿していません'); return; }
+      var r = buildRollup_(ss, team, today, reader);
+      if (!r.members) return;
+      postRollup_(ss, team.channel, r);
+      done.push(team.id);
+    } catch (err) {
+      problems.push((team.name || team.id) + '：' + (err && err.message ? err.message : err));
+    }
+  });
+  PropertiesService.getScriptProperties().setProperty('ROLLUP_LAST', JSON.stringify({ at: nowJst_(), posted: done, problems: problems }));
+  if (problems.length) {
+    try {
+      dmAdmins_(ss, ':warning: *ミエタスク：チームのまとめ*（' + md_(today) + '）\n' + problems.map(function (p) { return '• ' + p; }).join('\n'));
+    } catch (err) {
+      problems.push('システム管理者に知らせられませんでした：' + err.message);
+    }
+  }
+  return problems;
+}
+
+// ---------------------------------------------------------------- メニュー（チームのまとめ）
+
+function menuSetNotionToken() {
+  menu_(function (ui) {
+    var res = ui.prompt('Notionの鍵を設定する',
+      'Notion のインテグレーションの「内部インテグレーションシークレット」（ntn_ で始まる）を貼り付けてください。\n' +
+      'スクリプトの中にだけ保存され、メンバーには配られません。MTD の2つのデータベースを読めるかを確かめてから保存します。',
+      ui.ButtonSet.OK_CANCEL);
+    if (res.getSelectedButton() !== ui.Button.OK) return null;
+    return setNotionToken_(res.getResponseText());
+  });
+}
+
+function setNotionToken_(raw) {
+  var token = String(raw || '').trim();
+  if (!/^(ntn_|secret_)/.test(token)) throw new Error('ntn_ で始まる内部インテグレーションシークレットではありません');
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var s = settings_(ss);
+  var props = PropertiesService.getScriptProperties();
+  var old = props.getProperty('NOTION_TOKEN');
+  props.setProperty('NOTION_TOKEN', token);
+  try {
+    var me = notion_('get', 'users/me');
+    [['プロジェクトDB', s.notion_projects], ['タスクDB', s.notion_tasks]].forEach(function (db) {
+      try {
+        notion_('post', 'data_sources/' + sourceId_(db[1]) + '/query', { page_size: 1 });
+      } catch (err) {
+        if (err.status === 404) throw new Error('MTD の' + db[0] + 'を読めません。そのデータベースの「…」→「接続」で、このインテグレーションを追加してください');
+        throw err;
+      }
+    });
+    return 'Notionの鍵を保存しました（' + (me.name || 'インテグレーション') + '）。MTD のプロジェクトDB・タスクDBを読めることを確かめました。';
+  } catch (err) {
+    if (old) props.setProperty('NOTION_TOKEN', old); else props.deleteProperty('NOTION_TOKEN');
+    throw new Error(err.message + '（保存していません）');
+  }
+}
+
+function menuTrialRollup() { menu_(function () { return trialRollup_(selectedRow_(SHEETS.teams)); }); }
+
+// 選んだチームのまとめを、まとめチャンネルではなくシステム管理者の DM に出す。中身と出し先の両方を確かめる
+function trialRollup_(sel) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var team = teamById_(allTeams_(ss), sel.r['チームID']);
+  if (!team) throw new Error('チームIDが入っていません');
+  var r = buildRollup_(ss, team, todayJst_(), notionReader_(ss));
+  var to = dmAdmins_(ss, '（試し・まとめチャンネルには出していません）\n' + r.parent, r.replies);
+  var where = team.channel ? audienceProblem_(ss, team) || 'まとめチャンネルの参加者は管理者・システム管理者だけで、出せる状態です' : 'まとめチャンネルがまだありません';
+  return (team.name || team.id) + 'のまとめ（' + r.members + '人）をシステム管理者（' + to.join(', ') + '）に DM で送りました。\n' + where;
+}
+
+function rollupTriggers_() {
+  return ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'dailyRollup'; });
+}
+
+function menuStartRollup() { menu_(function () { return startRollup_(); }); }
+
+function startRollup_() {
+  notionToken_(); // 鍵が無いまま始めない
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!list_(settings_(ss).system_admins).length) throw new Error('「設定」シートの system_admins が空です。失敗を知らせる先が無いので始めません');
+  rollupTriggers_().forEach(function (t) { ScriptApp.deleteTrigger(t); }); // 何度押しても1本だけにする
+  ScriptApp.newTrigger('dailyRollup').timeBased().everyDays(1).atHour(ROLLUP_HOUR).inTimezone('Asia/Tokyo').create();
+  var teams = allTeams_(ss).filter(function (t) { return t.channel; });
+  var notes = teams.map(function (t) { return '・' + (t.name || t.id) + '：' + (audienceProblem_(ss, t) || '出せる状態です'); });
+  return '毎朝のまとめを始めました（平日 ' + ROLLUP_HOUR + '時台。土日・祝日は出しません）。\n' + (notes.join('\n') || 'まとめチャンネルのあるチームがまだありません');
+}
+
+function menuStopRollup() {
+  menu_(function () {
+    var ts = rollupTriggers_();
+    ts.forEach(function (t) { ScriptApp.deleteTrigger(t); });
+    return ts.length ? '毎朝のまとめを止めました。' : '毎朝のまとめは動いていませんでした。';
   });
 }
 

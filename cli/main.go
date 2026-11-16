@@ -5,6 +5,7 @@
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
 //	mietask post ...                                          Slackへ投稿（自分のチャンネルだけ。点検用に件数を送る）
+//	mietask share ...                                         管理者向けの案件ごとの要約を窓口に送る
 //	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
 //	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
 //	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
@@ -88,8 +89,10 @@ func usage() {
   sync upsert --findings FILE         巡回結果を台帳に登録する
   sync status ID... --status S        タスクの status を変える
   sync record --ts TS                 投稿したスレッドの ts を控える
-  post --payload FILE                 自分のチャンネルへ親＋子スレッドを投稿する
+  post --payload FILE [--share FILE]  自分のチャンネルへ親＋子スレッドを投稿する
                                       （点検用に件数だけを送る。--no-team で送らない）
+                                      （--share で管理者向けの案件ごとの要約も出して送る）
+  share --file FILE                   管理者向けの案件ごとの要約だけを送り直す
   channel --name NAME                 投稿先のプライベートチャンネルを作る
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
@@ -122,17 +125,12 @@ func run(argv []string) int {
 	case "post":
 		var a *args
 		if a, err = parseArgs(rest, "no-team"); err == nil {
-			err = cmdPost(a.get("payload"), a.get("channel"), a.get("token-file"), a.flags["dry-run"])
-			// 自分のチャンネルへ出せたら、動作の点検用に件数（超過・今日・今週）だけを窓口に送る。
-			// 一覧そのもの（題名・メモ・出どころ）はまとめに出さない。DM や非公開チャンネル、
-			// メールの内容が入るため。payload を消す前に読む。
-			// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、--no-team のときは送らない。
-			if err == nil && a.get("channel") == "" && a.get("payload") != "" && !a.flags["no-team"] {
-				sendTeamStatus(a.get("payload"), a.flags["dry-run"])
-			}
-			if err == nil && !a.flags["dry-run"] {
-				consumeInput(a.get("payload"))
-			}
+			err = runPost(a)
+		}
+	case "share":
+		var a *args
+		if a, err = parseArgs(rest); err == nil {
+			err = cmdShare(a.get("file"), a.flags["dry-run"])
 		}
 	case "channel":
 		var a *args
@@ -207,6 +205,50 @@ func run(argv []string) int {
 		return 1
 	}
 	return code
+}
+
+// runPost は自分のチャンネルへの投稿と、そのあとに窓口へ送るもの（点検用の件数・管理者向けの要約）。
+//
+// --share を付けると、要約の形を投稿の前に確かめ、子スレッドの最後に「管理者に届く内容」として同じものを出し、
+// 投稿のあとで窓口に送る。投稿は済んでいるので、要約を送れなくても投稿をやり直させない（警告だけ）。
+func runPost(a *args) error {
+	dry := a.flags["dry-run"]
+	payload := a.get("payload")
+	sharePath := a.get("share")
+	var share []shareItem
+	postPath := payload
+	if sharePath != "" {
+		if a.get("channel") != "" {
+			return errors.New("--share は自分のチャンネルへの投稿でだけ使えます（--channel と一緒には使えません）。")
+		}
+		var err error
+		if share, err = loadShare(sharePath); err != nil {
+			return err
+		}
+		if postPath, err = withSharePreview(payload, share); err != nil {
+			return err
+		}
+		defer os.Remove(postPath)
+	}
+	if err := cmdPost(postPath, a.get("channel"), a.get("token-file"), dry); err != nil {
+		return err
+	}
+	// 動作の点検用に件数（超過・今日・今週）だけを窓口に送る（システム管理者が見る）。payload を消す前に読む。
+	// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、--no-team のときは送らない。
+	if a.get("channel") == "" && payload != "" && !a.flags["no-team"] {
+		sendTeamStatus(payload, dry)
+	}
+	if sharePath != "" {
+		if err := sendShare(share, dry); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 管理者向けの要約を送れませんでした。投稿は済んでいるので、投稿はやり直さず `mietask share --file %s` だけをやり直してください: %v\n", sharePath, err)
+		} else if !dry {
+			consumeInput(sharePath)
+		}
+	}
+	if !dry {
+		consumeInput(payload)
+	}
+	return nil
 }
 
 // consumeInput は使い終わった入力ファイル（返信・巡回結果・投稿内容）を消す。
