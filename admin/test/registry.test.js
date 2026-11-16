@@ -393,23 +393,34 @@ test('日々の状態：件数だけを受け取り、同じ日に2回届いた�
   assert.deepStrictEqual(['超過', '今日', '今週'].map(h => cell(env, '日々の状態', 2, h)), [2, 0, 0]);
 });
 
-test('管理者の画面：直近8日の件数が、管理しているチームの人の分だけ返る', () => {
+test('点検用の件数：チームの管理者には返さず、システム管理者にだけ全員分を返す', () => {
   const env = load();
   seed(env);
   const k1 = issue(env, 2); // U1（pm1）
-  const k2 = issue(env, 4); // U2（pd。UM の管理外）
+  const k2 = issue(env, 4); // U2（pd）
   call(env, { id: k1.i, k: k1.k, action: 'status', counts: { overdue: 1, today: 2, week: 3 } });
   call(env, { id: k2.i, k: k2.k, action: 'status', counts: { overdue: 9, today: 9, week: 9 } });
   // 8日より前の行は返さない
   const sh = env.ss.getSheetByName('日々の状態');
   sh.appendRow(sh.cells[0].map(h => ({ '日付': '2026-11-08', 'Slack ID': 'U1', '名前': '山田 太郎', '超過': 7 })[h] ?? ''));
 
+  // チームの管理者：担当チームの人は見えるが、件数は返らない（案件ごとに重さが違い、状態把握に使えないため）
   const km = issue(env, 3); // UM は pm の管理者
-  const me = call(env, { id: km.i, k: km.k, action: 'me' });
-  assert.deepStrictEqual(me.managed.daily, [
-    { date: '2026-11-16', slack_id: 'U1', name: '山田 太郎', overdue: 1, today: 2, week: 3, at: '2026-11-16T07:00:00+09:00' },
-  ]);
-  // 一般メンバーには、自分の分も含めて見えない
+  const mgr = call(env, { id: km.i, k: km.k, action: 'me' }).managed;
+  assert.deepStrictEqual(mgr.members.map(m => m.slack_id).sort(), ['U1', 'U9', 'UM']);
+  assert.strictEqual(mgr.system_admin, false);
+  assert.strictEqual(mgr.daily, undefined, 'チームの管理者に件数が返っている');
+
+  // システム管理者：どのチームの管理者でもなくても、全チーム・全員と、直近8日の件数が見える
+  const st = env.ss.getSheetByName('設定');
+  st.cells.forEach(r => { if (r[0] === 'system_admins') r[1] = 'U2'; });
+  const adm = call(env, { id: k2.i, k: k2.k, action: 'me' }).managed;
+  assert.strictEqual(adm.system_admin, true);
+  assert.deepStrictEqual(adm.teams.map(t => t.id).sort(), ['pd', 'pm', 'pm1', 'pm2']);
+  assert.deepStrictEqual(adm.members.map(m => m.slack_id).sort(), ['U1', 'U2', 'U9', 'UM']);
+  assert.deepStrictEqual(adm.daily.map(d => [d.slack_id, d.date, d.overdue]).sort(), [['U1', '2026-11-16', 1], ['U2', '2026-11-16', 9]]);
+
+  // どちらでもない人には何も返らない
   assert.strictEqual(call(env, { id: k1.i, k: k1.k, action: 'me' }).managed, null);
 });
 

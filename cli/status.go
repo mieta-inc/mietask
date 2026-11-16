@@ -1,10 +1,12 @@
 package main
 
-// 管理者向けの件数。
+// 動作の点検用の件数。
 //
 // チームのまとめには、各自の一覧（題名・メモ・出どころ）を出さない。タスクの題名には
-// DM・非公開チャンネル・メールの内容が入るため。管理者に届くのは、毎朝の件数
-// （超過・今日・今週）だけにする。件数は本人の投稿の1行目から取るので、本人が見た数と同じになる。
+// DM・非公開チャンネル・メールの内容が入るため。窓口に送るのは毎朝の件数（超過・今日・今週）だけで、
+// 見るのはシステム管理者（急に0件になった人がいれば、巡回が壊れているかもしれない）。
+// チームの管理者の状態把握には使わない。案件ごとに重さが違い、件数では忙しさが分からないため。
+// 件数は本人の投稿の1行目から取るので、本人が見た数と同じになる。
 
 import (
 	"fmt"
@@ -48,7 +50,7 @@ func parseTeamCounts(parent string) teamCounts {
 func sendTeamStatus(payloadPath string, dryRun bool) {
 	raw, err := os.ReadFile(payloadPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 管理者向けの件数を作れませんでした: %v\n", err)
+		fmt.Fprintf(os.Stderr, "警告: 点検用の件数を作れませんでした: %v\n", err)
 		return
 	}
 	v, err := ParseJSON(raw)
@@ -62,7 +64,7 @@ func sendTeamStatus(payloadPath string, dryRun bool) {
 	c := parseTeamCounts(str(own.Val("parent")))
 	summary := fmt.Sprintf("超過%d・今日%d・今週%d", c.Overdue, c.Today, c.Week)
 	if dryRun {
-		fmt.Printf("[dry-run] 管理者に送るのは件数だけ: %s（題名・メモ・出どころは送らない）\n", summary)
+		fmt.Printf("[dry-run] 動作の点検用に送るのは件数だけ: %s（題名・メモ・出どころは送らない）\n", summary)
 		return
 	}
 	k := relayKeyFromFile()
@@ -73,8 +75,8 @@ func sendTeamStatus(payloadPath string, dryRun bool) {
 	p["counts"] = map[string]any{"overdue": c.Overdue, "today": c.Today, "week": c.Week}
 	if _, err := relayCall(k, "status", p); err != nil {
 		// 窓口がまだ古く、件数の受け取りを知らないときもここに来る
-		fmt.Fprintf(os.Stderr, "警告: 管理者向けの件数を送れませんでした。自分のチャンネルへの投稿は済んでいるので、やり直さないでください: %v\n", err)
+		fmt.Fprintf(os.Stderr, "警告: 点検用の件数を送れませんでした。自分のチャンネルへの投稿は済んでいるので、やり直さないでください: %v\n", err)
 		return
 	}
-	fmt.Printf("管理者に件数を送りました: %s\n", summary)
+	fmt.Printf("点検用の件数を送りました: %s\n", summary)
 }

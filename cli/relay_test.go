@@ -68,9 +68,10 @@ func (f *fakeRelay) respond(b map[string]any) map[string]any {
 			"me":    map[string]any{"name": "山田 太郎", "slack_id": "U1", "teams": []string{"pd", "pm1"}, "status": "有効", "channel": "COWN"},
 			"teams": []any{map[string]any{"id": "pd", "name": "PD", "channel": "CPD"}, map[string]any{"id": "pm1", "name": "PM1", "channel": ""}},
 			"managed": map[string]any{
-				"teams":    []any{map[string]any{"id": "pm", "name": "PM"}, map[string]any{"id": "pm1", "name": "PM1", "parent": "pm"}, map[string]any{"id": "pd", "name": "PD"}},
-				"members":  []any{map[string]any{"name": "A", "slack_id": "UA", "teams": []string{"pm1"}, "status": "有効", "last_run": "2026-11-16T07:00:00+09:00"}, map[string]any{"name": "B", "slack_id": "UB", "teams": []string{"pd"}, "status": "有効"}},
-				"settings": map[string]any{"notion_projects": "collection://p"},
+				"teams":        []any{map[string]any{"id": "pm", "name": "PM"}, map[string]any{"id": "pm1", "name": "PM1", "parent": "pm"}, map[string]any{"id": "pd", "name": "PD"}},
+				"members":      []any{map[string]any{"name": "A", "slack_id": "UA", "teams": []string{"pm1"}, "status": "有効", "last_run": "2026-11-16T07:00:00+09:00"}, map[string]any{"name": "B", "slack_id": "UB", "teams": []string{"pd"}, "status": "有効"}},
+				"settings":     map[string]any{"notion_projects": "collection://p"},
+				"system_admin": true, // 件数はシステム管理者にだけ返る
 				"daily": []any{
 					map[string]any{"date": "2026-11-17", "slack_id": "UA", "name": "A", "overdue": 1, "today": 2, "week": 3, "at": "2026-11-17T07:04:00+09:00"},
 					map[string]any{"date": "2026-11-17", "slack_id": "UB", "name": "B", "overdue": 9, "today": 9, "week": 9, "at": "2026-11-17T07:05:00+09:00"},

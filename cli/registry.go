@@ -111,11 +111,14 @@ type Registry struct {
 	Members  []Member          `json:"members"`
 	Settings map[string]string `json:"settings"`
 	Activity []Activity        `json:"activity"`
-	// Daily は各自のミエタスクが毎朝送る件数（直近8日）。窓口が管理者にだけ返す
+	// Daily は各自のミエタスクが毎朝送る件数（直近8日）。動作の点検用で、窓口はシステム管理者にだけ返す。
+	// チームの管理者の状態把握には使わない（案件ごとに重さが違い、件数では忙しさが分からないため）
 	Daily []DailyStatus `json:"daily,omitempty"`
+	// SystemAdmin は、この中身をシステム管理者として受け取ったか
+	SystemAdmin bool `json:"system_admin,omitempty"`
 }
 
-// DailyStatus は1人1日分の件数。題名やメモは入らない（管理者に届くのは件数だけ）
+// DailyStatus は1人1日分の件数。題名やメモは入らない
 type DailyStatus struct {
 	Date    string `json:"date"`
 	SlackID string `json:"slack_id"`
@@ -531,7 +534,7 @@ func filterRegistry(reg *Registry, ids []string) *Registry {
 	for _, id := range ids {
 		in[strings.ToLower(id)] = true
 	}
-	out := &Registry{Settings: reg.Settings, Activity: reg.Activity}
+	out := &Registry{Settings: reg.Settings, Activity: reg.Activity, SystemAdmin: reg.SystemAdmin}
 	for _, t := range reg.Teams {
 		if in[strings.ToLower(t.ID)] {
 			out.Teams = append(out.Teams, t)

@@ -4,7 +4,7 @@
 // 追加のインストールなしで Mac・Windows で動くように、1本の実行ファイルにしてある。
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
-//	mietask post ...                                          Slackへ投稿（自分のチャンネル。管理者には件数だけ）
+//	mietask post ...                                          Slackへ投稿（自分のチャンネルだけ。点検用に件数を送る）
 //	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
 //	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
 //	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
@@ -89,7 +89,7 @@ func usage() {
   sync status ID... --status S        タスクの status を変える
   sync record --ts TS                 投稿したスレッドの ts を控える
   post --payload FILE                 自分のチャンネルへ親＋子スレッドを投稿する
-                                      （管理者には件数だけを送る。--no-team で送らない）
+                                      （点検用に件数だけを送る。--no-team で送らない）
   channel --name NAME                 投稿先のプライベートチャンネルを作る
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
@@ -122,7 +122,7 @@ func run(argv []string) int {
 		var a *args
 		if a, err = parseArgs(rest, "no-team"); err == nil {
 			err = cmdPost(a.get("payload"), a.get("channel"), a.get("token-file"), a.flags["dry-run"])
-			// 自分のチャンネルへ出せたら、管理者向けに件数（超過・今日・今週）だけを窓口に送る。
+			// 自分のチャンネルへ出せたら、動作の点検用に件数（超過・今日・今週）だけを窓口に送る。
 			// 一覧そのもの（題名・メモ・出どころ）はまとめに出さない。DM や非公開チャンネル、
 			// メールの内容が入るため。payload を消す前に読む。
 			// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、--no-team のときは送らない。
