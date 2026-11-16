@@ -4,7 +4,8 @@ package main
 //
 // 各自のミエタスクが毎朝、その日の一覧（Slack・メール・議事録・MTD から拾ったタスク）を「案件ごとの状態」に束ねて窓口に送る。
 // 管理者のページ（ダッシュボード）は、これと MTD を合わせて案件ごとに並べる。
-// 送るのは 案件名・状態・次の期限・残りの件数・超過の件数 だけ。タスクの題名、メールや DM の文面、人の名前は入れない
+// 送るのは 案件名・状態・一言（いま何をしているか）・次の期限・残りの件数・超過の件数 だけ。
+// タスクの題名、メールや DM の文面、人の名前は入れない
 // （作るのは本人の手元の Claude。ここでは形と、リンク・メンション・メールアドレスが無いことを確かめる）。
 // 管理者に届くのと同じものを、本人のチャンネルにも出す（何が上に見えているかを本人が知っているように）。
 //
@@ -27,6 +28,7 @@ type shareItem struct {
 	Name    string `json:"name"`
 	State   string `json:"state"`
 	Due     string `json:"due,omitempty"`
+	Note    string `json:"note,omitempty"`    // いま何をしているかの一言（題名・人の名前は入れない）
 	Open    *int   `json:"open,omitempty"`    // まとまりの中で、まだ終わっていないタスクの数
 	Overdue *int   `json:"overdue,omitempty"` // そのうち期限が過ぎているものの数
 }
@@ -37,6 +39,7 @@ const (
 	shareMax      = 20
 	shareNameMax  = 40
 	shareCountMax = 999
+	shareNoteMax  = 40
 )
 
 var (
@@ -70,6 +73,8 @@ func loadShare(path string) ([]shareItem, error) {
 		name = strings.TrimSpace(name)
 		state, _ := it["state"].(string)
 		due, _ := it["due"].(string)
+		note, _ := it["note"].(string)
+		note = strings.TrimSpace(note)
 		switch {
 		case name == "":
 			return nil, fmt.Errorf("%s の案件名が空です", where)
@@ -81,6 +86,10 @@ func loadShare(path string) ([]shareItem, error) {
 			return nil, fmt.Errorf("%s の状態は %s のどれかです（%q になっています）", where, strings.Join(shareStates, "・"), state)
 		case due != "" && !reYMD.MatchString(due):
 			return nil, fmt.Errorf("%s の期限は yyyy-mm-dd で書きます（%q になっています）", where, due)
+		case utf8.RuneCountInString(note) > shareNoteMax:
+			return nil, fmt.Errorf("%s の一言が長すぎます（%d文字まで）: %s", where, shareNoteMax, note)
+		case reShareBad.MatchString(note):
+			return nil, fmt.Errorf("%s の一言に改行・リンク・メンション・メールアドレスは入れられません: %s", where, note)
 		}
 		open, err := shareCount(it, "open", where+" の残りの件数（open）")
 		if err != nil {
@@ -93,7 +102,7 @@ func loadShare(path string) ([]shareItem, error) {
 		if open != nil && overdue != nil && *overdue > *open {
 			return nil, fmt.Errorf("%s の超過の件数（%d）が残りの件数（%d）より多くなっています", where, *overdue, *open)
 		}
-		out = append(out, shareItem{Name: name, State: state, Due: due, Open: open, Overdue: overdue})
+		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Open: open, Overdue: overdue})
 	}
 	return out, nil
 }
@@ -145,7 +154,7 @@ func shortDate(ymd string) string {
 
 // sharePreview は本人のチャンネルに出す「管理者に届く内容」。
 func sharePreview(items []shareItem) string {
-	lines := []string{":eyes: *管理者に届く内容*（管理者のページに、案件ごとの状態だけが出ます。タスクの題名・メールやDMの中身は届きません）"}
+	lines := []string{":eyes: *管理者に届く内容*（管理者のページに、案件ごとの状態と一言が出ます。タスクの題名・メールやDMの中身は届きません）"}
 	if len(items) == 0 {
 		lines = append(lines, "• 案件なし")
 	}
@@ -157,6 +166,10 @@ func sharePreview(items []shareItem) string {
 		if it.Due != "" {
 			l += "（次の期限 " + shortDate(it.Due) + "）"
 		}
+		if it.Note != "" {
+			l += "：" + it.Note
+		}
+
 		lines = append(lines, l)
 	}
 	return strings.Join(lines, "\n")
