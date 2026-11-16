@@ -675,7 +675,9 @@ function dash(env, email, secret = 'dash-secret') {
   return call(env, { action: 'dashboard', secret, email });
 }
 
-const cardOf = (v, id) => v.cards[id];
+const cardOf = (v, id) => [v.self].concat(v.people || []).find(c => c && c.slack_id === id);
+const idsOf = v => (v.people || []).map(c => c.slack_id);
+const rowsOf = c => c.items.map(i => [i.name, i.rank, i.role, i.note, i.meta]);
 
 test('ダッシュボード：メンバーは自分の分だけ。案件を出どころで分けず、気にすべきものから並べる', () => {
   const env = load();
@@ -683,22 +685,23 @@ test('ダッシュボード：メンバーは自分の分だけ。案件を出�
   const v = dash(env, 'Betsu@Example.com '); // 大文字・空白があっても同じ人
   assert.ok(v.ok, JSON.stringify(v));
   assert.deepStrictEqual(v.viewer, { name: '別チーム', email: 'betsu@example.com' });
-  assert.strictEqual(v.self, 'U2');
+  assert.strictEqual(v.self.slack_id, 'U2');
   assert.deepStrictEqual(v.teams, []);
-  assert.strictEqual(v.admin, false);
+  assert.deepStrictEqual(v.people, [], 'ほかの人の分が入っている');
+  assert.deepStrictEqual(v.tabs, ['self', 'projects']);
+  assert.strictEqual(v.admin, null);
   assert.ok(!('health' in v));
-  assert.deepStrictEqual(Object.keys(v.cards), ['U2'], 'ほかの人の分が入っている');
   const c = cardOf(v, 'U2');
-  assert.strictEqual(c.count, '今の案件 6件、これから始まる 1件');
+  assert.deepStrictEqual([c.now, c.later, c.overdue, c.waiting], [6, 1, [], ['26順天高1ゼミ']]);
   assert.strictEqual(c.notes, 'ミエタスク未着');
-  assert.deepStrictEqual(c.items.map(i => [i.name, i.rank, i.long]), [
-    ['26順天高1ゼミ', 1, 'CC・確認待ちあり（〜3/31）'],
-    ['26広島学院 高1 FW', 2, 'CC（〜11/20）'],
-    ['大阪国際WS', 2, 'PM（〜12/4）'],
-    ['リードだけの案件', 2, 'リード（〜3/31）'],
-    ['都立大崎', 2, 'SP（10/1〜）'],
-    ['他人の案件', 3, '担当外・タスク1件'],
-    ['1月開始WS', 4, 'CC・これから（1/10〜）'],
+  assert.deepStrictEqual(rowsOf(c), [
+    ['26順天高1ゼミ', 1, 'CC', '確認待ちのタスクあり', '〜3/31'],
+    ['26広島学院 高1 FW', 2, 'CC', '', '〜11/20'],
+    ['大阪国際WS', 2, 'PM', '', '〜12/4'],
+    ['リードだけの案件', 2, 'リード', '', '〜3/31'],
+    ['都立大崎', 2, 'SP', '', '10/1〜'],
+    ['他人の案件', 3, '担当外', 'タスク1件', ''],
+    ['1月開始WS', 4, 'CC', '1/10開始', ''],
   ]);
   // 中止・終わった・期間が過ぎた案件と、タスクの題名は返さない
   const text = JSON.stringify(v);
@@ -714,36 +717,39 @@ test('ダッシュボード：ロールで見える範囲が決まる。管理�
   seedDash(env);
   const d = dash(env, 'dan@example.com'); // pd の管理者
   assert.deepStrictEqual(d.teams.map(t => [t.id, t.members]), [['pd', ['U2', 'U3', 'U4', 'UD']]]);
-  assert.deepStrictEqual(Object.keys(d.cards).sort(), ['U2', 'U3', 'U4', 'UD'], '停止の人・pm の人が入っている');
-  assert.strictEqual(d.admin, false);
+  assert.deepStrictEqual(idsOf(d).sort(), ['U2', 'U3', 'U4', 'UD'], '停止の人・pm の人が入っている');
+  assert.deepStrictEqual([d.admin, d.tabs], [null, ['members', 'projects', 'self']]);
+  assert.strictEqual(idsOf(d)[0], 'U2', '気にすべきものがある人から並べていない');
 
   const m = dash(env, 'kanri@example.com'); // pm の管理者（下に pm1・pm2）
   assert.deepStrictEqual(m.teams.map(t => [t.id, t.members.sort()]), [['pm', ['U1', 'U9', 'UM']], ['pm1', ['U1']], ['pm2', ['U9']]]);
-  assert.ok(!('U2' in m.cards));
+  assert.ok(!idsOf(m).includes('U2'));
 
   const e = dash(env, 'exec@example.com'); // 役員（一番上のチームから全部）
   assert.deepStrictEqual(e.teams.map(t => t.id), ['all', 'pm', 'pm1', 'pm2', 'pd']);
   assert.deepStrictEqual(e.teams[0].members.sort(), ['U1', 'U2', 'U3', 'U4', 'U9', 'UA', 'UD', 'UE', 'UM']);
-  assert.strictEqual(e.cards.U3.notes, 'MTD未連携（システム管理者が対応）・ミエタスク未着');
+  assert.strictEqual(cardOf(e, 'U3').notes, 'MTD未連携（システム管理者が対応）・ミエタスク未着');
 
   // ロールが無ければ（チームに属していても）自分の分だけ。ロールを外せば、その時点から見えなくなる
   setCell(env, 'メンバー', 9, 'ロール', '');
   const gone = dash(env, 'dan@example.com');
-  assert.deepStrictEqual([gone.teams, Object.keys(gone.cards)], [[], ['UD']]);
+  assert.deepStrictEqual([gone.teams, gone.people, gone.self.slack_id], [[], [], 'UD']);
   // 部門長：部門（親チーム）の管理者にすると、下のチームもタブになる
   setCell(env, 'メンバー', 9, 'ロール', '管理者');
   setCell(env, 'メンバー', 9, 'チーム', 'all');
   assert.deepStrictEqual(dash(env, 'dan@example.com').teams.map(t => t.id), ['all', 'pm', 'pm1', 'pm2', 'pd']);
 });
 
-test('ダッシュボード：システム管理者は別のページで全員の動作状況だけ。案件の中身は見えない', () => {
+test('ダッシュボード：システム管理者は管理のタブで全員の動作状況だけ。案件の中身は見えない', () => {
   const env = load();
   seedDash(env);
   const k = issue(env, 4); // U2
   call(env, { id: k.i, k: k.k, action: 'status', counts: { overdue: 1, today: 2, week: 3 }, version: '0.9.0' });
   call(env, { id: k.i, k: k.k, action: 'share', items: [{ name: '社内DX', state: '相手待ち' }] });
   const v = dash(env, 'sys@example.com');
-  assert.deepStrictEqual([v.teams, Object.keys(v.cards), v.admin], [[], ['UA'], true], 'システム管理者に他人の案件が見えている');
+  assert.deepStrictEqual([v.teams, v.people, v.self.slack_id, v.tabs], [[], [], 'UA', ['self', 'admin']], 'システム管理者に他人の案件が見えている');
+  assert.ok(v.admin.health.some(x => x.name === '別チーム') && !JSON.stringify(v.admin).includes('社内DX'));
+  assert.ok(!JSON.stringify(v.projects).includes('社内DX'), 'システム管理者に他人の案件が見えている');
   const h = call(env, { action: 'dashboard', secret: 'dash-secret', email: 'sys@example.com', view: 'health' });
   assert.ok(h.ok && !h.forbidden, JSON.stringify(h));
   const u2 = h.health.find(x => x.name === '別チーム');
@@ -823,7 +829,8 @@ test('ダッシュボード：ページが分かれていても全部読む', ()
   for (let i = 0; i < 130; i++) {
     env.notion.sources.proj.push(project(`b2000000-0000-0000-0000-${String(i).padStart(12, '0')}`, 'ゼミ' + i, { cc: [ME], kind: 'ゼミ', start: '2026-04-01', end: '2027-03-31' }));
   }
-  assert.strictEqual(dash(env, 'betsu@example.com').cards.U2.count, '今の案件 136件、これから始まる 1件');
+  const c = dash(env, 'betsu@example.com').self;
+  assert.deepStrictEqual([c.now, c.later], [136, 1]);
   assert.ok(env.notion.calls.some(c => c.path === 'data_sources/proj/query' && c.body.start_cursor === '100'), '2ページ目を読んでいない');
 });
 
@@ -832,8 +839,10 @@ test('ダッシュボード：担当案件が無くても、担当外の案件�
   seedDash(env);
   env.notion.sources.proj = env.notion.sources.proj.filter(p => ['CC担当', 'PM担当', 'SP担当', 'プロジェクトリード']
     .every(k => p.properties[k].people.every(u => u.id !== ME)));
-  assert.deepStrictEqual(dash(env, 'betsu@example.com').cards.U2.items.map(i => [i.name, i.short]),
-    [['他人の案件', '担当外'], ['名前を読めない案件', '担当外・2件']]);
+  const v = dash(env, 'betsu@example.com');
+  assert.deepStrictEqual(rowsOf(v.self), [['他人の案件', 3, '担当外', 'タスク1件', ''],
+    ['名前を読めない案件', 3, '担当外', '2件（Notion のインテグレーションが接続されていない）', '']]);
+  assert.ok(!v.projects.some(p => p.name === '名前を読めない案件'), '名前を読めない案件を案件の並びに出している');
 });
 
 test('案件の要約：決まった形だけを受け取り、ダッシュボードで MTD の案件と1つの並びにする。本人の題名やリンクは受け取らない', () => {
@@ -871,25 +880,26 @@ test('案件の要約：決まった形だけを受け取り、ダッシュボ�
   sheet.appendRow(sheet.cells[0].map(h => ({ '日付': '2026-11-13', 'Slack ID': 'U4', '名前': 'MTDに無い人', '要約': '[]', '届いた時刻': '2026-11-13T07:00:00+09:00' })[h] ?? ''));
 
   const v = dash(env, 'dan@example.com');
-  const c2 = v.cards.U2;
-  assert.strictEqual(c2.count, '今の案件 10件、これから始まる 1件');
+  const c2 = cardOf(v, 'U2');
+  assert.deepStrictEqual([c2.now, c2.later, c2.overdue, c2.waiting], [10, 1, ['TiB講義スライド'], ['26順天高1ゼミ', '社内DX']]);
   assert.strictEqual(c2.notes, '');
   assert.strictEqual(c2.share_at, '2026-11-16T07:00:00+09:00');
-  assert.deepStrictEqual(c2.items.map(i => i.name + ' — ' + i.long), [
-    'TiB講義スライド — 期限が過ぎたものあり',
-    '26順天高1ゼミ — CC・確認待ちあり（〜3/31）',
-    '社内DX — 相手待ち',
-    'ミエマス（ポータル・MTD） — 動いている（次の期限 11/20）',
-    '26広島学院 高1 FW — CC（〜11/20）',
-    '大阪国際WS — PM（〜12/4）',
-    'リードだけの案件 — リード（〜3/31）',
-    '採用 — 動いている',
-    '都立大崎 — SP（10/1〜）',
-    '他人の案件 — 担当外・タスク1件',
-    '1月開始WS — CC・これから（1/10〜）',
+  assert.deepStrictEqual(rowsOf(c2), [
+    ['TiB講義スライド', 0, '', '期限が過ぎたものあり', ''],
+    ['26順天高1ゼミ', 1, 'CC', '確認待ちのタスクあり', '〜3/31'],
+    ['社内DX', 1, '', '相手待ち', ''],
+    ['26広島学院 高1 FW', 2, 'CC', '', '〜11/20'],
+    ['ミエマス（ポータル・MTD）', 2, '', '動いている', '期限11/20'],
+    ['大阪国際WS', 2, 'PM', '', '〜12/4'],
+    ['リードだけの案件', 2, 'リード', '', '〜3/31'],
+    ['採用', 2, '', '動いている', ''],
+    ['都立大崎', 2, 'SP', '', '10/1〜'],
+    ['他人の案件', 3, '担当外', 'タスク1件', ''],
+    ['1月開始WS', 4, 'CC', '1/10開始', ''],
   ]);
-  assert.strictEqual(c2.items[3].short, '期限11/20');
-  assert.deepStrictEqual(v.cards.U4, { slack_id: 'U4', name: 'MTDに無い人', teams: ['pd'], count: '見える案件なし', items: [], notes: 'ミエタスクは11/13から未着', share_at: '' });
+  assert.deepStrictEqual(cardOf(v, 'U4'), { slack_id: 'U4', name: 'MTDに無い人', teams: ['pd'], team_names: ['PD'], notes: 'ミエタスクは11/13から未着', share_at: '',
+    items: [], now: 0, later: 0, overdue: [], waiting: [] });
+
 
   // 管理者の画面（team-sheet）にも、担当チームの人の要約が返る
   const k = issue(env, 9); // UD（pd の管理者）
@@ -985,7 +995,7 @@ function loadDashboard(env, { email = '', props = { RELAY_URL: 'https://relay.ex
 
 const tabsOf = html => [...html.matchAll(/role="tab"[^>]*>([^<]*)</g)].map(m => m[1]);
 
-test('ダッシュボードのページ：メンバーは自分の分だけ。役員はチームのタブ。動作状況はシステム管理者だけの別ページ', () => {
+test('ダッシュボードのページ：見る人でタブが変わる。メンバーは自分の分だけ、役員はチームで絞れる。管理のタブはシステム管理者だけ', () => {
   const env = load();
   seedDash(env);
   // MTD の案件名は自由に書けるので、そのまま HTML に入れない
@@ -993,36 +1003,35 @@ test('ダッシュボードのページ：メンバーは自分の分だけ。�
 
   const mem = loadDashboard(env, { email: 'betsu@example.com' });
   const h = mem.page();
-  assert.deepStrictEqual(mem.sent.map(s => [s.url, s.body]), [['https://relay.example/exec', { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', view: '', change: null }]]);
-  assert.deepStrictEqual(tabsOf(h), ['案件', '自分']);
-  assert.ok(h.includes('<h3>別チーム</h3>') && h.includes('26順天高1ゼミ') && h.includes('今の案件 7件、これから始まる 1件'), h);
+  assert.deepStrictEqual(mem.sent.map(s => [s.url, s.body]), [['https://relay.example/exec',
+    { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', view: '', change: null, page_url: 'https://dash.example/exec' }]]);
+  assert.deepStrictEqual(tabsOf(h), ['自分', '案件']);
+  assert.ok(h.includes('<h3>別チーム</h3>') && h.includes('26順天高1ゼミ') && h.includes('PD・今 7件・これから 1件') && h.includes('相手待ち 1'), h);
   assert.ok(!h.includes('<img src=x') && h.includes('&lt;img src=x onerror=alert(1)&gt;案件'), '案件名を escape していない');
-  assert.ok(!/段 部長|山田 太郎|動作状況/.test(h));
+  assert.ok(!/段 部長|山田 太郎|data-tab="admin"|メンバーを足す/.test(h));
+  // ページの URL を窓口が覚える（鍵や案内の DM に書く）
+  assert.strictEqual(env.props.DASHBOARD_URL, undefined, 'script.google.com でない URL を覚えた');
 
   const ex = loadDashboard(env, { email: 'exec@example.com' }).page();
-  assert.deepStrictEqual(tabsOf(ex), ['案件', '全社', 'PM', 'PM1', 'PM2', 'PD', '自分']);
-  assert.ok(ex.includes('9人・気にすべきものがある人 1人'), ex.match(/<div class="bar">.*?<\/div>/)[0]);
-  assert.ok(!ex.includes('件数（点検用）'));
-
-  assert.ok(!ex.includes('?view=health'), '役員に動作状況の入口が出ている');
+  assert.deepStrictEqual(tabsOf(ex), ['メンバー', '案件', '自分']);
+  const members = ex.match(/<section role="tabpanel" id="members">([\s\S]*?)<\/section>/)[1];
+  assert.strictEqual((members.match(/<article class="person"/g) || []).length, 9);
+  assert.ok(members.includes('<option value="pd">PD</option>') && members.includes('data-teams=" all pm pm1 "'), members);
+  assert.ok(!ex.includes('data-tab="admin"') && !ex.includes('メンバーを足す'), '役員に管理のタブが出ている');
 
   const sys = loadDashboard(env, { email: 'sys@example.com' });
   const top = sys.page();
-  assert.deepStrictEqual(tabsOf(top), ['案件', '自分']);
-
-  assert.ok(top.includes('href="https://dash.example/exec?view=health" target="_top"'), '動作状況への入口が無い');
-  const hp = sys.page({ view: 'health' });
-  assert.ok(hp.includes('ミエタスク 動作状況') && hp.includes('件数（点検用）') && hp.includes('メンバー, システム管理者'), hp);
-  assert.ok(!hp.includes('26順天高1ゼミ'), '動作状況に案件の中身が出ている');
-  assert.deepStrictEqual(sys.sent.map(x => x.body.view), ['', 'health']);
-  // システム管理者でなければ、URL を直に開いても見えない
+  assert.deepStrictEqual(tabsOf(top), ['自分', '管理']);
+  assert.ok(top.includes('メンバーを足す') && top.includes('メンバー, システム管理者') && top.includes('鍵を送る'), top);
+  assert.ok(!top.includes('26順天高1ゼミ'), '管理のタブに案件の中身が出ている');
+  // 以前の動作状況の URL（?view=health）は、管理のタブを開いた状態で出す
+  assert.match(sys.page({ view: 'health' }), /aria-selected="true">管理</);
+  // システム管理者でなければ、URL を直に開いても管理のタブは出ない
   const no = loadDashboard(env, { email: 'exec@example.com' }).page({ view: 'health' });
-  assert.match(no, /システム管理者だけが見られます/);
-  assert.ok(!no.includes('件数（点検用）'));
+  assert.deepStrictEqual(tabsOf(no), ['メンバー', '案件', '自分']);
 
   // ページの中の JavaScript が壊れていない
-  const js = ex.match(/<script>([\s\S]*)<\/script>/)[1];
-  assert.doesNotThrow(() => new vm.Script(js));
+  for (const page of [h, ex, top]) for (const m of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new vm.Script(m[1]));
 });
 
 test('ダッシュボードのページ：開けないときは、理由を書いたページを出す', () => {
@@ -1069,7 +1078,7 @@ test('台帳の変更：ページを開いたあとにシートが直されて�
   seedDash(env);
   const r1 = memberRow(env, 'U1');
   const before = JSON.stringify(env.ss.getSheetByName('メンバー').cells);
-  const base = { teams: ['pm1'], roles: [], status: '有効', email: 'yamada@example.com' };
+  const base = { name: '山田 太郎', teams: ['pm1'], roles: [], status: '有効', email: 'yamada@example.com', notion_user: '' };
   setCell(env, 'メンバー', r1, 'チーム', 'pm2'); // 誰かがシートを直した
   const stale = change(env, 'sys@example.com', { kind: 'member', slack_id: 'U1', set: { teams: ['pd'] }, base });
   assert.strictEqual(stale.error, 'conflict');
@@ -1082,7 +1091,9 @@ test('台帳の変更：ページを開いたあとにシートが直されて�
     [{ email: '=HYPERLINK("x")@a.b' }, /先頭/],
     [{ email: 'not-mail' }, /メールの形/],
     [{ email: 'betsu@example.com' }, /別チーム さんが使っています/],
-    [{ name: '山田' }, /変えられない項目/],
+    [{ name: ' ' }, /名前が空/],
+    [{ notion_user: 'abc' }, /32桁/],
+    [{ key: 'x' }, /変えられない項目/],
   ];
   for (const [set, why] of bad) {
     const r = change(env, 'sys@example.com', { kind: 'member', slack_id: 'U1', set, base });
@@ -1141,7 +1152,7 @@ test('台帳の変更：ページの保存から窓口まで通る。表を作�
   const env = load();
   seedDash(env);
   const sys = loadDashboard(env, { email: 'sys@example.com' });
-  const html = sys.ctx.saveChange({ kind: 'add_team', id: 'x1', name: '</script><script>alert(1)</script>' });
+  const html = sys.ctx.saveChange({ kind: 'add_team', id: 'x1', name: '</script><script>alert(1)</script>' }).html;
   assert.ok(html.includes('<td>x1</td>') && html.includes('id="admin-data"'), html);
   const data = html.match(/<script type="application\/json" id="admin-data">([\s\S]*?)<\/script>/)[1];
   assert.ok(!data.includes('<'), 'データの中に < がそのまま入っている');
@@ -1256,12 +1267,16 @@ test('案件の手がかり：本人の MTD の案件名と、同じチームの
 test('案件の要約：残りと超過の件数を受け取り、メンバーの一覧に出す。件数の無い古い版も受け取る', () => {
   const env = load();
   const k = seedProjects(env);
-  const c = dash(env, 'betsu@example.com').cards.U2;
-  assert.strictEqual(c.items.find(i => i.name === '社内DX').long, '期限が過ぎたものあり・残り5件（うち超過2件）');
-  assert.strictEqual(c.items.find(i => i.name === '渋谷区ＷＳ').long, '相手待ち・残り3件（次の期限 11/20）');
+  const c = dash(env, 'betsu@example.com').self;
+  const row = n => rowsOf(c).find(r => r[0] === n);
+  assert.deepStrictEqual(row('社内DX'), ['社内DX', 0, '', '期限が過ぎたものあり', '残り5件（うち超過2件）']);
+  // MTD の案件と同じ名前なら1行にする（役割と期間は MTD、状態と件数はミエタスクから）
+  assert.deepStrictEqual(row('渋谷区WS'), ['渋谷区WS', 1, 'PM', '相手待ち', '残り3件・期限11/20・〜12/31']);
+  assert.ok(!row('渋谷区ＷＳ'));
   assert.ok(call(env, { id: k.U2.i, k: k.U2.k, action: 'share', items: [{ name: '社内DX', state: '動いている' }] }).ok);
-  const row = env.ss.getSheetByName('案件の要約').cells.find(r => r[1] === 'U2');
-  assert.deepStrictEqual(JSON.parse(row[3]), [{ name: '社内DX', state: '動いている', due: '' }]);
+  const saved = env.ss.getSheetByName('案件の要約').cells.find(r => r[1] === 'U2');
+  assert.deepStrictEqual(JSON.parse(saved[3]), [{ name: '社内DX', state: '動いている', due: '' }]);
+
 });
 
 test('案件の別名：システム管理者が動作状況のページから束ね・外せる。変更の記録に残り、輪や同じ名前は断る', () => {
@@ -1299,20 +1314,107 @@ test('案件の別名：システム管理者が動作状況のページから�
   assert.strictEqual(change(env, 'exec@example.com', { kind: 'merge', from: 'a', to: 'b' }).error, 'forbidden');
 });
 
-test('案件のページ：案件のタブを最初に出し、関わっている人と進み具合を並べる。動作状況のページから案件を束ねられる', () => {
+test('案件のページ：人の並びに一言と件数を出し、案件のタブで関わっている人と進み具合を確かめられる。管理のタブから案件を束ねられる', () => {
   const env = load();
   seedProjects(env);
   env.notion.sources.proj.push(project('b1000000-0000-0000-0000-0000000000b2', '<b>太字</b>の案件', { pm: [ME], start: '2026-04-01', end: '2027-03-31' }));
   const h = loadDashboard(env, { email: 'dan@example.com' }).page();
-  const first = h.match(/<section role="tabpanel" id="projects">([\s\S]*?)<\/section>/)[1];
-  assert.ok(first.includes('<h3>渋谷区WS</h3>') && first.includes('期間の5割・残り6週') && first.includes('<li>別チーム<span>PM</span></li>') &&
-    first.includes('ほかに1人') && first.includes('残り7件（うち超過2件）') && first.includes('次の期限 11/20'), first);
-  assert.ok(first.includes('&lt;b&gt;太字&lt;/b&gt;の案件') && !first.includes('<b>太字'), '案件名を escape していない');
+  assert.deepStrictEqual(tabsOf(h), ['メンバー', '案件', '自分']);
+  const people = h.match(/<section role="tabpanel" id="members">([\s\S]*?)<\/section>/)[1];
+  assert.ok(people.indexOf('<h3>別チーム</h3>') < people.indexOf('<h3>ひも付けなし</h3>'), '気にすべきものがある人から並んでいない');
+  assert.ok(people.includes('<span class="flag f0">期限超過 1</span>') && people.includes('残り5件（うち超過2件）'), people);
+  const projects = h.match(/<section role="tabpanel" id="projects"[^>]*>([\s\S]*?)<\/section>/)[1];
+  assert.ok(projects.includes('<span class="dot d1"></span>渋谷区WS') && projects.includes('別チーム<span class="role">PM</span>') &&
+    projects.includes('ほかに1人') && projects.includes('残り7件（うち超過2件）') && projects.includes('次の期限 11/20・残り3件・期間の5割・残り6週'), projects);
+  assert.ok(h.includes('&lt;b&gt;太字&lt;/b&gt;の案件') && !h.includes('<b>太字'), '案件名を escape していない');
   assert.ok(!h.includes('PM1だけの案件'));
   const hp = loadDashboard(env, { email: 'sys@example.com' });
-  const html = hp.ctx.saveChange({ kind: 'merge', from: '渋谷区ワークショップ', to: '渋谷区&港区"WS' });
-  assert.ok(html.includes('<td>渋谷区ワークショップ</td><td>渋谷区&amp;港区&quot;WS</td>') && html.includes('data-unmerge="渋谷区ワークショップ"'), html);
-  const page = hp.page({ view: 'health' });
+  const r = hp.ctx.saveChange({ kind: 'merge', from: '渋谷区ワークショップ', to: '渋谷区&港区"WS' });
+  assert.ok(r.html.includes('<td>渋谷区ワークショップ</td><td>渋谷区&amp;港区&quot;WS</td>') && r.html.includes('data-unmerge="渋谷区ワークショップ"'), r.html);
+  const page = hp.page();
   assert.ok(page.includes('data-merge') && page.includes('案件の別名'));
-  for (const m of page.matchAll(/<script>([\s\S]*?)<\/script>/g)) assert.doesNotThrow(() => new vm.Script(m[1]));
+});
+
+test('管理のタブ：人を足し、鍵を DM で送り、無効にできる。鍵はページに返さない。管理者・役員になった人にはページの案内が届く', () => {
+  const env = load();
+  seedDash(env);
+  env.props.DASHBOARD_URL = 'https://script.google.com/a/macros/example.com/s/DASH/exec';
+  const add = change(env, 'sys@example.com', { kind: 'add_member', name: '新井 花', slack_id: 'u0new0001', email: 'Arai@Example.com',
+    teams: ['PD'], roles: ['管理者'], notion_user: 'https://www.notion.so/' + 'a'.repeat(32) });
+  assert.ok(add.ok, JSON.stringify(add));
+  const row = memberRow(env, 'U0NEW0001');
+  assert.deepStrictEqual(['名前', 'メール', 'チーム', 'ロール', '状態', 'Notion ユーザー', '鍵'].map(h => cell(env, 'メンバー', row, h)),
+    ['新井 花', 'arai@example.com', 'pd', '管理者', '有効', 'user://' + 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '']);
+  assert.match(add.message, /新井 花 さんにページの案内を DM で送りました/);
+  assert.match(env.slack.dms.U0NEW0001.slice(-1)[0].text, /ページが見られるようになりました\*（管理者）[\s\S]*DASH\/exec/);
+  assert.deepStrictEqual(add.health.find(h => h.slack_id === 'U0NEW0001').state, '鍵なし');
+  // 足すときの誤り
+  for (const [c, why] of [
+    [{ name: 'x', slack_id: 'U2' }, /U から始まる/],
+    [{ name: 'x', slack_id: 'U0000002', email: 'betsu@example.com' }, /別チーム さんが使っています/],
+    [{ name: '', slack_id: 'U0000003' }, /名前が空/],
+    [{ name: 'x', slack_id: 'U0NEW0001' }, /新井 花 さんとして台帳にあります/],
+  ]) {
+    const r = change(env, 'sys@example.com', Object.assign({ kind: 'add_member' }, c));
+    assert.strictEqual(r.error, 'bad_change', JSON.stringify(c));
+    assert.match(r.message, why);
+  }
+
+  // 鍵を送る：DM に鍵と入れ方とページの URL が入る。ページへの返事には鍵を入れない
+  const sent = change(env, 'sys@example.com', { kind: 'send_key', slack_id: 'U0NEW0001' });
+  assert.ok(sent.ok, JSON.stringify(sent));
+  assert.ok(!/mietask2\./.test(JSON.stringify(sent)), '鍵をページに返している');
+  const dm = env.slack.dms.U0NEW0001.slice(-1)[0].text;
+  assert.match(dm, /マーケットプレイス[\s\S]*mieta-inc\/mietask[\s\S]*\/mietask:setup[\s\S]*```mietask2\.[A-Za-z0-9_-]+```[\s\S]*DASH\/exec/);
+  assert.match(cell(env, 'メンバー', row, '鍵'), /^発行 2026-11-16/);
+  assert.ok(env.props.KEY_U0NEW0001);
+  assert.strictEqual(sent.health.find(h => h.slack_id === 'U0NEW0001').state, 'セットアップ待ち');
+  // 無効にする
+  const off = change(env, 'sys@example.com', { kind: 'revoke_key', slack_id: 'U0NEW0001' });
+  assert.ok(off.ok && !env.props.KEY_U0NEW0001);
+  assert.strictEqual(off.health.find(h => h.slack_id === 'U0NEW0001').state, '鍵を無効にした');
+  // DM が送れなければ断り、鍵を残さない（手で渡すなら台帳のメニューから）
+  env.slack.dmFails = true;
+  const fail = change(env, 'sys@example.com', { kind: 'send_key', slack_id: 'U0NEW0001' });
+  assert.strictEqual(fail.error, 'bad_change');
+  assert.match(fail.message, /DM を送れませんでした（missing_scope）[\s\S]*台帳のメニュー/);
+  assert.ok(!env.props.KEY_U0NEW0001);
+  env.slack.dmFails = false;
+  // 記録に残る（鍵の中身は残さない）
+  const log = env.ss.getSheetByName('変更の記録').cells.slice(1).map(r => [r[2], r[3], r[5]]);
+  assert.deepStrictEqual(log.map(l => l[1]), ['追加', '鍵', '鍵']);
+  assert.ok(!JSON.stringify(log).includes('mietask2.'));
+
+  // ロールを付けたときも案内が届く。もともと管理者だった人には送らない
+  const before = (env.slack.dms.U2 || []).length;
+  const up = change(env, 'sys@example.com', { kind: 'member', slack_id: 'U2', set: { roles: ['役員'] }, base: { roles: [] } });
+  assert.ok(up.ok && /別チーム さんにページの案内/.test(up.message), JSON.stringify(up));
+  assert.strictEqual(env.slack.dms.U2.length, before + 1);
+  assert.strictEqual(change(env, 'sys@example.com', { kind: 'member', slack_id: 'U2', set: { roles: ['役員', 'システム管理者'] }, base: { roles: ['役員'] } }).message, '');
+  // システム管理者でなければ人を足せない
+  assert.strictEqual(change(env, 'exec@example.com', { kind: 'add_member', name: 'x', slack_id: 'U0000009' }).error, 'forbidden');
+});
+
+test('ダッシュボード：ページの URL を窓口が覚える。合言葉の合った問い合わせの、script.google.com の URL だけ', () => {
+  const env = load();
+  seedDash(env);
+  const url = 'https://script.google.com/a/macros/example.com/s/AKfy_x-1/exec';
+  call(env, { action: 'dashboard', secret: 'wrong', email: 'betsu@example.com', page_url: url });
+  assert.strictEqual(env.props.DASHBOARD_URL, undefined);
+  call(env, { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', page_url: 'https://evil.example/exec' });
+  assert.strictEqual(env.props.DASHBOARD_URL, undefined);
+  call(env, { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', page_url: url });
+  assert.strictEqual(env.props.DASHBOARD_URL, url);
+});
+
+test('案件の要約：一言を受け取って人の並びに出す。長いもの・リンクやメンションの入ったものは断る', () => {
+  const env = load();
+  seedDash(env);
+  const k = issue(env, 7); // U4
+  for (const note of ['あ'.repeat(41), 'https://x.example を見る', '<@U1> に確認', '改行\nあり', 'a@example.com に返信']) {
+    assert.strictEqual(call(env, { id: k.i, k: k.k, action: 'share', items: [{ name: '社内DX', state: '動いている', note }] }).error, 'bad_share', note);
+  }
+  assert.ok(call(env, { id: k.i, k: k.k, action: 'share', items: [{ name: '社内DX', state: '相手待ち', note: ' 経費精算の流れの見直し。先方の確認待ち ', open: 2 }] }).ok);
+  const c = dash(env, 'nomtd@example.com').self;
+  assert.deepStrictEqual(rowsOf(c), [['社内DX', 1, '', '経費精算の流れの見直し。先方の確認待ち', '残り2件']]);
 });

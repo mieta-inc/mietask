@@ -190,7 +190,8 @@ var ACTIONS = {
     return {};
   },
 
-  // 案件ごとの要約を受け取る（ダッシュボードに出す）。案件名・状態・次の期限・残りの件数・超過の件数だけを残し、ほかは捨てる。
+  // 案件ごとの要約を受け取る（ダッシュボードに出す）。案件名・状態・一言・次の期限・残りの件数・超過の件数だけを残し、ほかは捨てる。
+
   // 本人の手元で、タスクの題名やメール・DM の文面を入れずに作ったもの。同じものが本人のチャンネルにも出ている
   share: function (ctx, body) {
     var items = cleanShare_(body.items);
@@ -278,7 +279,7 @@ function memberFromRow_(r, rowNo) {
   return {
     row: rowNo, name: r['名前'], slack_id: r['Slack ID'], email: r['メール'], teams: list_(r['チーム']), roles: list_(r['ロール']),
     status: r['状態'] || '有効', notion_user: r['Notion ユーザー'], channel: r['投稿先'],
-    last_run: r['最後に動いた'], version: r['バージョン'],
+    last_run: r['最後に動いた'], version: r['バージョン'], key: r['鍵'] || '',
   };
 }
 
@@ -441,6 +442,7 @@ function upsertDaily_(ctx, def, date, fields, at) {
 var SHARE_STATES = ['動いている', '相手待ち', '期限が過ぎたものあり'];
 var SHARE_MAX = 20;
 var HINT_MAX = 80;
+var NOTE_MAX = 40; // 案件ごとの「いま何をしているか」の一言
 
 // 件数（残り・超過）。書かれていなければ null（古い版のミエタスクは件数を送らない）
 function shareCount_(v, label) {
@@ -465,6 +467,10 @@ function cleanShare_(raw) {
     var due = String(it.due || '');
     if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw relayError_('bad_share', where + ' の期限は yyyy-MM-dd です');
     var out = { name: name, state: state, due: due };
+    var note = String(it.note || '').trim();
+    if (note.length > NOTE_MAX) throw relayError_('bad_share', where + ' の一言が長すぎます（' + NOTE_MAX + '文字まで）');
+    if (/[\r\n<>@]|https?:/i.test(note)) throw relayError_('bad_share', where + ' の一言に改行・リンク・メンション・メールアドレスは入れられません');
+    if (note) out.note = note;
     var open = shareCount_(it.open, where + ' の残りの件数（open）');
     var overdue = shareCount_(it.overdue, where + ' の超過の件数（overdue）');
     if (open !== null) out.open = open;
@@ -685,28 +691,9 @@ function setBotToken_(raw) {
 function issueKey_(ui, sel) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var m = memberFromRow_(sel.r, sel.row);
-  if (!/^[UW][A-Z0-9]+$/.test(m.slack_id)) throw new Error('Slack ID が入っていません');
-  if (m.status === STOPPED) throw new Error(m.name + ' さんは「停止」です。鍵は発行できません');
-  var url = settings_(ss).relay_url;
-  if (!url) throw new Error('「設定」シートに relay_url（この窓口のURL）がありません');
-
-  var secret = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty('KEY_' + m.slack_id, sha256_(secret)); // 前の鍵はここで効かなくなる
-  var key = KEY_PREFIX + base64url_(JSON.stringify({ u: url, i: m.slack_id, k: secret }));
-  setCell_(ss, SHEETS.members, m.row, '鍵', '発行 ' + nowJst_().slice(0, 10));
-
-  deleteKeyMessage_(m.slack_id);
-  var text = ':key: *ミエタスクの鍵*（' + m.name + ' さん専用）\n' +
-    'Claude Code で `/mietask:setup` と打ち、入力欄が出たら、下の鍵をそのまま貼ってください。\n' +
-    '```' + key + '```\n' +
-    'この鍵はほかの人に渡さないでください。セットアップが終わると、このメッセージは自動で消えます。';
-  // 表示名（username）は指定しない。指定すると Slack は Bot の入っていない別の DM に置き、あとで消せなくなる
-  var r = slack_('chat.postMessage', { channel: m.slack_id, text: text });
-  if (r.ok) {
-    props.setProperty('KEYMSG_' + m.slack_id, JSON.stringify({ channel: r.channel, ts: r.ts }));
-    return m.name + ' さんに鍵を DM で送りました。前の鍵があれば、それはもう使えません。';
-  }
+  var key = newKey_(ss, m);
+  var r = dmKey_(m, key);
+  if (r.ok) return m.name + ' さんに鍵を DM で送りました。前の鍵があれば、それはもう使えません。';
   // DM を送れない（Slack アプリの権限が足りない等）。管理者に見せて、手で渡してもらう
   var html = HtmlService.createHtmlOutput(
     '<p style="font-family:sans-serif;font-size:13px">DM を送れませんでした（' + r.error + '）。<br>' +
@@ -715,6 +702,35 @@ function issueKey_(ui, sel) {
     .setWidth(520).setHeight(240);
   ui.showModalDialog(html, 'ミエタスクの鍵（' + m.name + ' さん）');
   return null;
+}
+
+// 鍵を作り直す（前の鍵はここで効かなくなる）
+function newKey_(ss, m) {
+  if (!/^[UW][A-Z0-9]+$/.test(m.slack_id)) throw changeError_('Slack ID が入っていません');
+  if (m.status === STOPPED) throw changeError_(m.name + ' さんは「停止」です。鍵は発行できません');
+  var url = settings_(ss).relay_url;
+  if (!url) throw changeError_('「設定」シートに relay_url（この窓口のURL）がありません');
+  var secret = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  PropertiesService.getScriptProperties().setProperty('KEY_' + m.slack_id, sha256_(secret));
+  setCell_(ss, SHEETS.members, m.row, '鍵', '発行 ' + nowJst_().slice(0, 10));
+  return KEY_PREFIX + base64url_(JSON.stringify({ u: url, i: m.slack_id, k: secret }));
+}
+
+// 鍵と入れ方を本人に DM で送る。送れたら、あとで消せるように場所を覚える
+function dmKey_(m, key) {
+  deleteKeyMessage_(m.slack_id);
+  var page = PropertiesService.getScriptProperties().getProperty('DASHBOARD_URL');
+  var text = ':key: *ミエタスクの鍵*（' + m.name + ' さん専用）\n' +
+    '1. Claude のアプリの設定（カスタマイズ）からマーケットプレイスを追加し、GitHub リポジトリに `mieta-inc/mietask` を指定する\n' +
+    '2. 追加したマーケットプレイスの `mietask` を、このコンピュータに追加する\n' +
+    '3. 入力欄の下のモードを「Auto」にして `/mietask:setup` と打ち、入力欄が出たら下の鍵をそのまま貼る\n' +
+    '```' + key + '```\n' +
+    'この鍵はほかの人に渡さないでください。セットアップが終わると、このメッセージは自動で消えます。' +
+    (page ? '\n管理者に何が見えているかは、ミエタスクのページの「自分」で確かめられます（社内の Google アカウントで開く）: ' + page : '');
+  // 表示名（username）は指定しない。指定すると Slack は Bot の入っていない別の DM に置き、あとで消せなくなる
+  var r = slack_('chat.postMessage', { channel: m.slack_id, text: text });
+  if (r.ok) PropertiesService.getScriptProperties().setProperty('KEYMSG_' + m.slack_id, JSON.stringify({ channel: r.channel, ts: r.ts }));
+  return r;
 }
 
 function revokeKey_(sel) {
@@ -1031,48 +1047,13 @@ function memberState_(projects, tasks, today, titleOf) {
     hasTasks: tasks.length > 0 };
 }
 
-// 1人ぶんの案件を、出どころ（MTD・ミエタスク）を分けずに1つの並びにする。
-// rank の小さい順（気にすべきもの → 動いているもの → 担当外 → これから始まるもの）、同じ rank は期限・終了日の近い順。
-// short は一覧の1行に添える短い説明、long はスレッドの1行に出す説明。
+// 1人ぶんの案件の並び（personItems_）。rank の小さい順（気にすべきもの → 動いているもの → 担当外 → これから始まるもの）、
+// 同じ rank は期限・終了日の近い順。
 var RANK = { overdue: 0, waiting: 1, running: 2, helping: 3, starting: 4 };
+var SHARE_WORD = ['期限が過ぎたものあり', '相手待ち', '動いている'];
 
 function periodLabel_(p, today) {
   return p.end ? '〜' + dateLabel_(p.end, today) : p.start ? dateLabel_(p.start, today) + '〜' : '';
-}
-
-function mtdItems_(st) {
-  if (!st) return [];
-  var items = [];
-  var current = st.running.concat(st.leading);
-  current.forEach(function (p) {
-    var role = p.roles.join('・');
-    var period = periodLabel_(p, st.today);
-    var stuck = st.stuckIn[p.id] ? st.stuckIn[p.id] + 'あり' : '';
-    var state = stuck || (st.moving[p.id] ? '動いている' : '');
-    items.push({
-      name: p.name, rank: stuck ? RANK.waiting : RANK.running, due: p.end || '',
-      short: [role, period, stuck].filter(String).join('・'),
-      long: [role, state].filter(String).join('・') + (period ? '（' + period + '）' : ''),
-    });
-  });
-  var unreadable = 0;
-  Object.keys(st.elsewhere).forEach(function (k) {
-    var o = st.elsewhere[k];
-    if (o.name === UNREADABLE) { unreadable++; return; }
-    items.push({ name: o.name, rank: RANK.helping, due: '', short: '担当外', long: '担当外・タスク' + o.tasks.length + '件' });
-  });
-  // 名前を読めない案件は1つにまとめる（並べても何の案件か分からないため）
-  if (unreadable) {
-    items.push({ name: '名前を読めない案件', rank: RANK.helping, due: '', short: '担当外・' + unreadable + '件',
-      long: '担当外・' + unreadable + '件（Notion のインテグレーションが接続されていない）' });
-  }
-  st.starting.forEach(function (p) {
-    var role = p.roles.join('・');
-    var from = dateLabel_(p.start, st.today) + '〜';
-    items.push({ name: p.name, rank: RANK.starting, due: p.start,
-      short: [role, from].filter(String).join('・'), long: [role, 'これから'].filter(String).join('・') + '（' + from + '）' });
-  });
-  return items;
 }
 
 // 「残り5件（うち超過2件）」。件数が届いていなければ空
@@ -1081,44 +1062,13 @@ function countLabel_(open, overdue) {
   return '残り' + open + '件' + (overdue ? '（うち超過' + overdue + '件）' : '');
 }
 
-function shareItems_(sh, today) {
-  if (!sh || sh.date !== today) return [];
-  return sh.items.map(function (it) {
-    var due = it.due ? dateLabel_(it.due, today) : '';
-    var rank = it.state === '期限が過ぎたものあり' ? RANK.overdue : it.state === '相手待ち' ? RANK.waiting : RANK.running;
-    var word = it.state === '期限が過ぎたものあり' ? '期限超過あり' : it.state === '相手待ち' ? '相手待ち' : '';
-    var count = countLabel_(it.open, it.overdue);
-    return { name: it.name, rank: rank, due: it.due || '',
-      short: [word, due ? '期限' + due : ''].filter(String).join('・'),
-      long: [it.state, count].filter(String).join('・') + (due ? '（次の期限 ' + due + '）' : '') };
-  });
-}
-
-function memberItems_(st, sh, today) {
-  var items = shareItems_(sh, today).concat(mtdItems_(st));
-  return items.map(function (it, i) { it.i = i; return it; }).sort(function (a, b) {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    var da = a.due || '9999', db = b.due || '9999';
-    if (da !== db) return da < db ? -1 : 1;
-    return a.i - b.i;
-  });
-}
-
 // 見えていない理由（空いているとは書かない）
-function memberNotes_(st, sh, today, linked) {
+function memberNotes_(sh, today, linked) {
   var notes = [];
   if (!linked) notes.push('MTD未連携（システム管理者が対応）');
   if (!sh) notes.push('ミエタスク未着');
   else if (sh.date !== today) notes.push('ミエタスクは' + md_(sh.date) + 'から未着');
-  return notes.length ? '※' + notes.join('・') : '';
-}
-
-// スレッドの見出しに、いま抱えている案件の数を出す（どれくらいやっているかの目安）
-function memberCount_(items) {
-  var now = items.filter(function (it) { return it.rank !== RANK.starting; }).length;
-  var later = items.length - now;
-  if (!items.length) return '見える案件なし';
-  return '今の案件 ' + now + '件' + (later ? '、これから始まる ' + later + '件' : '');
+  return notes.join('・');
 }
 
 function todayJst_() { return Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd'); }
@@ -1162,30 +1112,96 @@ function mtdNames_(st) {
   return uniq_(names);
 }
 
-// 1人ぶんの、案件ごとの関わり。出どころ（MTD・ミエタスク）ごとに1つずつ。束ねるのは projectsView_
+// 1人ぶんの、案件ごとの関わり。出どころ（MTD・ミエタスク）ごとに1つずつ。
+// 人ごとに束ねるのは personItems_、案件ごとに束ねるのは projectsView_
 function memberEntries_(st, sh, today) {
   var out = [];
   if (st) {
-    var stuckOf = function (p) { return st.stuckIn[p.id] ? RANK.waiting : RANK.running; };
     st.running.concat(st.leading).forEach(function (p) {
-      out.push({ name: p.name, src: 'mtd', rank: stuckOf(p), due: '', roles: p.roles, start: p.start, end: p.end, people: p.people || [] });
+      var stuck = st.stuckIn[p.id];
+      out.push({ name: p.name, src: 'mtd', rank: stuck ? RANK.waiting : RANK.running, due: '', roles: p.roles,
+        start: p.start, end: p.end, people: p.people || [], note: stuck ? stuck + 'のタスクあり' : '' });
     });
     st.starting.forEach(function (p) {
-      out.push({ name: p.name, src: 'mtd', rank: RANK.starting, due: '', roles: p.roles, start: p.start, end: p.end, people: p.people || [] });
+      out.push({ name: p.name, src: 'mtd', rank: RANK.starting, due: '', roles: p.roles, start: p.start, end: p.end,
+        people: p.people || [], note: dateLabel_(p.start, today) + '開始' });
     });
+    var unreadable = 0;
     Object.keys(st.elsewhere).forEach(function (k) {
       var o = st.elsewhere[k];
-      if (o.name !== UNREADABLE) out.push({ name: o.name, src: 'mtd', rank: RANK.helping, due: '', roles: ['担当外'], start: '', end: '', people: [] });
+      if (o.name === UNREADABLE) { unreadable++; return; }
+      out.push({ name: o.name, src: 'mtd', rank: RANK.helping, due: '', roles: ['担当外'], start: '', end: '', people: [],
+        note: 'タスク' + o.tasks.length + '件' });
     });
+    // 名前を読めない案件は1つにまとめる（並べても何の案件か分からないため）。案件ごとの並びには出さない
+    if (unreadable) {
+      out.push({ name: '名前を読めない案件', src: 'mtd', rank: RANK.helping, due: '', roles: ['担当外'], start: '', end: '', people: [],
+        note: unreadable + '件（Notion のインテグレーションが接続されていない）', unreadable: true });
+    }
   }
   if (sh && sh.date === today) {
     sh.items.forEach(function (it) {
       var rank = it.state === '期限が過ぎたものあり' ? RANK.overdue : it.state === '相手待ち' ? RANK.waiting : RANK.running;
       out.push({ name: it.name, src: 'share', rank: rank, due: it.due || '', roles: [], start: '', end: '',
-        open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [] });
+        open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [], note: it.note || '' });
     });
   }
   return out;
+}
+
+// 1人ぶんの関わりを案件ごとに1行にする。MTD とミエタスクの同じ案件は1行（役割と期間は MTD、一言と件数はミエタスクから）
+function personItems_(entries, resolve, today) {
+  var groups = {}, order = [];
+  entries.forEach(function (e) {
+    var r = e.unreadable ? { key: '\u0000unreadable', name: e.name, aliased: false } : resolve(e.name);
+    var g = groups[r.key];
+    if (!g) { g = groups[r.key] = { name: r.name, fixed: r.aliased, mtd: false, share: false, list: [] }; order.push(r.key); }
+    if (e.src === 'mtd') { if (!g.fixed && !g.mtd) g.name = e.name; g.mtd = true; } else g.share = true;
+    g.list.push(e);
+  });
+  var items = order.map(function (k) {
+    var g = groups[k], list = g.list;
+    var rank = Math.min.apply(null, list.map(function (e) { return e.rank; }));
+    var mtd = list.filter(function (e) { return e.src === 'mtd'; }), sh = list.filter(function (e) { return e.src === 'share'; });
+    var roles = uniq_([].concat.apply([], mtd.map(function (e) { return e.roles; })));
+    var note = sh.map(function (e) { return e.note; }).filter(String)[0] || mtd.map(function (e) { return e.note; }).filter(String)[0] || '';
+    if (!note && sh.length) note = SHARE_WORD[Math.min.apply(null, sh.map(function (e) { return e.rank; }))] || '';
+    var dues = list.map(function (e) { return e.due; }).filter(String).sort();
+    var start = mtd.map(function (e) { return e.start; }).filter(String).sort()[0] || '';
+    var end = mtd.map(function (e) { return e.end; }).filter(String).sort().reverse()[0] || '';
+    var counted = sh.filter(function (e) { return e.open !== null && e.open !== undefined; });
+    var count = counted.length ? countLabel_(counted.reduce(function (n, e) { return n + e.open; }, 0),
+      counted.reduce(function (n, e) { return n + (e.overdue || 0); }, 0)) : '';
+    var meta = [count, dues[0] ? '期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '']
+      .filter(String).join('・');
+    return { name: g.name, rank: rank, role: roles.join('・'), src: g.mtd && g.share ? 'both' : g.mtd ? 'mtd' : 'share',
+      note: note, meta: meta, start: start, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
+  });
+  return sortByRank_(items);
+}
+
+function sortByRank_(items) {
+  items.sort(function (a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    if (a._sort !== b._sort) return a._sort < b._sort ? -1 : 1;
+    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+  });
+  items.forEach(function (p) { delete p._sort; });
+  return items;
+}
+
+// 1人ぶんのカード。並びのほかに、気にすべきもの（期限超過・相手待ち）の案件名
+function personCard_(base, entries, resolve, today) {
+  var items = personItems_(entries || [], resolve, today);
+  var pick = function (f) { return items.filter(f).map(function (it) { return it.name; }); };
+  return {
+    slack_id: base.slack_id, name: base.name, teams: base.teams, notes: base.notes, share_at: base.share_at,
+    items: items.map(function (it) { return { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta }; }),
+    now: items.filter(function (it) { return it.rank !== RANK.starting; }).length,
+    later: items.filter(function (it) { return it.rank === RANK.starting; }).length,
+    overdue: pick(function (it) { return it.rank === RANK.overdue; }),
+    waiting: pick(function (it) { return it.rank === RANK.waiting; }),
+  };
 }
 
 function daysBetween_(a, b) {
@@ -1222,6 +1238,7 @@ function projectsView_(seen, hidden, resolve, byNotion, today) {
   };
   seen.forEach(function (s) {
     s.entries.forEach(function (e) {
+      if (e.unreadable) return;
       var g = group(e.name);
       // 表示する名前は、別名で束ねたものなら案件名、そうでなければ MTD の名前を優先する
       if (!g.fixed && e.src === 'mtd' && !g.mtd) { g.name = e.name; g.mtd = true; }
@@ -1260,16 +1277,10 @@ function projectsView_(seen, hidden, resolve, byNotion, today) {
       name: g.name, rank: rank, due: dues[0] || '', due_label: dues[0] ? dateLabel_(dues[0], today) : '',
       progress: progress_(start, end, today), mtd: g.mtd || mtd.length > 0,
       counts: counted.length ? countLabel_(open, overdue) : '', members: members, others: Object.keys(others).length,
-      _sort: dues[0] || end || start || '9999',
+      _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999',
     };
   });
-  out.sort(function (a, b) {
-    if (a.rank !== b.rank) return a.rank - b.rank;
-    if (a._sort !== b._sort) return a._sort < b._sort ? -1 : 1;
-    return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-  });
-  out.forEach(function (p) { delete p._sort; });
-  return out;
+  return sortByRank_(out);
 }
 
 
@@ -1283,6 +1294,10 @@ function dashboardAuth_(body) {
   if (sha256_(String(body.secret || '')) !== sha256_(want)) throw relayError_('bad_secret', 'ダッシュボードの合言葉が違います');
   var email = String(body.email || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) throw relayError_('bad_request', '見ている人のメールがありません');
+  // ページの URL を覚える（鍵や案内の DM に書くため）。合言葉を確かめたあとなので、ページから来たものだけ
+  var page = String(body.page_url || '');
+  var props = PropertiesService.getScriptProperties();
+  if (/^https:\/\/script\.google\.com\/[\w\/.\-]+\/exec$/.test(page) && props.getProperty('DASHBOARD_URL') !== page) props.setProperty('DASHBOARD_URL', page);
   return email;
 }
 
@@ -1293,23 +1308,39 @@ function activeMembers_(ss) {
 
 // ---------------------------------------------------------------- 見える範囲と中身
 
-// 見ている人に見せてよいものだけを返す。本人の分・管理しているチームの人の分・（システム管理者なら）全員の動作状況
+// 見る人に見せてよいものだけを返す。
+//   メンバー: 自分の分と、自分の関わる案件 / 管理者: 自分のチームとその下のチームの人 / 役員: 全員 /
+//   システム管理者: そのほかに管理のタブ（動作状況と台帳の操作。案件の中身は入れない）
 function dashboardView_(ss, email, today) {
   var members = activeMembers_(ss);
   var viewer = viewerByEmail_(ss, email);
   if (!viewer) return { viewer: null, today: today };
 
   var teams = allTeams_(ss);
-  // 見える範囲の下にあるチームも、それぞれタブにする（部門長なら部門と、その下の各チーム）
+  // 見える範囲の下にあるチームも、それぞれ絞り込みに出す（部門長なら部門と、その下の各チーム）
   var visible = scopeTeams_(teams, scopeRoots_(teams, viewer));
   var ctx = { ss: ss, today: today, shares: latestShares_(ss), reader: null, failed: {}, cards: {}, entries: {} };
-  var out = { viewer: { name: viewer.name, email: email }, today: today, cards: ctx.cards };
-  out.self = card_(ctx, viewer).slack_id;
+  var resolve = aliasResolver_(ss);
+  var out = { viewer: { name: viewer.name, email: email }, today: today };
+  card_(ctx, viewer);
   out.teams = visible.map(function (t) {
     var ids = idSet_(scopeTeams_(teams, [t]));
     var inTeam = members.filter(function (m) { return inTeams_(m, ids); });
     return { id: t.id, name: t.name || t.id, parent: t.parent || '', members: inTeam.map(function (m) { return card_(ctx, m).slack_id; }) };
   });
+  var teamName = function (id) { var t = teamById_(teams, id); return t ? t.name || t.id : id; };
+  var person = function (id) {
+    var c = personCard_(ctx.cards[id], ctx.entries[id], resolve, today);
+    c.team_names = c.teams.map(teamName);
+    return c;
+  };
+  var ids = uniq_([].concat.apply([], out.teams.map(function (t) { return t.members; })));
+  var worst = function (c) { return c.items.length ? Math.min.apply(null, c.items.map(function (it) { return it.rank; })) : 9; };
+  out.people = ids.map(person).map(function (c, i) { c._i = i; return c; }).sort(function (a, b) {
+    return worst(a) - worst(b) || a._i - b._i; // 気にすべきものがある人から
+  }).map(function (c) { delete c._i; return c; });
+  out.self = person(viewer.slack_id);
+
   // 案件ごとの並び。見える人の関わりを束ね、見えない人は数だけ（MTD の役割の欄と、今日の要約から分かる分）
   var byNotion = {};
   members.forEach(function (m) { if (nid_(m.notion_user)) byNotion[nid_(m.notion_user)] = m.slack_id; });
@@ -1318,18 +1349,24 @@ function dashboardView_(ss, email, today) {
     if (ctx.cards[m.slack_id]) seen.push({ member: m, entries: ctx.entries[m.slack_id] || [] });
     else hidden.push({ member: m, entries: memberEntries_(null, ctx.shares[m.slack_id] || null, today) });
   });
-  out.projects = projectsView_(seen, hidden, aliasResolver_(ss), byNotion, today);
-  out.admin = isSystemAdmin_(viewer); // 動作状況のページへの入口を出すかどうか（中身はそのページで返す）
+  out.projects = projectsView_(seen, hidden, resolve, byNotion, today);
+
+  var sys = isSystemAdmin_(viewer);
+  out.tabs = visible.length ? ['members', 'projects', 'self'] : sys ? ['self'] : ['self', 'projects'];
+  if (sys) out.tabs.push('admin');
+  out.admin = sys ? adminData_(ss, today) : null;
   // 同じ理由で読めなかった人は1行にまとめる（Notion の鍵が無いときに全員分が並ばないように）
   out.problems = Object.keys(ctx.failed).map(function (why) { return 'MTD を読めませんでした（' + why + '）：' + ctx.failed[why].join('、'); });
   return out;
 }
 
-// 1人ぶんの案件の並び。MTD を読めなかったときは、その人のカードに書かずにページの上に出す（黙って空にしない）
+// 1人ぶんの土台（名前・見えていない理由）と、案件ごとの関わり（ctx.entries）。
+// MTD を読めなかったときは、その人のカードに書かずにページの上に出す（黙って空にしない）。
+// 束ね方（案件の別名）は開くたびに台帳から読むので、ここでは束ねずに覚える
 function card_(ctx, m) {
   if (ctx.cards[m.slack_id]) return ctx.cards[m.slack_id];
   var cache = CacheService.getScriptCache();
-  var key = 'dash2:' + m.slack_id + ':' + ctx.today;
+  var key = 'dash3:' + m.slack_id + ':' + ctx.today;
   var hit = cache.get(key);
   if (hit) {
     var saved = JSON.parse(hit);
@@ -1349,22 +1386,27 @@ function card_(ctx, m) {
     }
   }
   var sh = ctx.shares[m.slack_id] || null;
-  var items = memberItems_(st, sh, ctx.today).map(function (it) {
-    return { name: it.name, rank: it.rank, short: it.short, long: it.long };
-  });
-  var c = {
-    slack_id: m.slack_id, name: m.name, teams: m.teams, count: memberCount_(items), items: items,
-    notes: memberNotes_(st, sh, ctx.today, linked).replace(/^※/, ''),
-    share_at: sh && sh.date === ctx.today ? sh.at : '',
-  };
+  var c = { slack_id: m.slack_id, name: m.name, teams: m.teams, notes: memberNotes_(sh, ctx.today, linked),
+    share_at: sh && sh.date === ctx.today ? sh.at : '' };
   var entries = memberEntries_(st, sh, ctx.today);
   if (mtdOk) cache.put(key, JSON.stringify({ card: c, entries: entries }), DASH_CACHE_SEC);
   ctx.entries[m.slack_id] = entries;
   return (ctx.cards[m.slack_id] = c);
-
 }
 
-// 動作状況のページ。システム管理者にだけ返す
+// 管理のタブの中身。システム管理者にだけ返す（動作状況と台帳の設定。案件の中身は入れない）
+function adminData_(ss, today) {
+  return {
+    health: healthView_(ss, latestShares_(ss), today),
+    teams: allTeams_(ss).map(function (t) { return { id: t.id, name: t.name || '', parent: t.parent || '' }; }),
+    roles: ROLE_NAMES.slice(1),
+    aliases: rows_(ss, SHEETS.aliases).filter(function (r) { return r['別名'] && r['案件名']; })
+      .map(function (r) { return { alias: r['別名'], name: r['案件名'] }; }),
+    log: rows_(ss, SHEETS.changes).slice(-30).reverse(), // 直近の変更（新しい順）
+  };
+}
+
+// 管理のタブからの変更。システム管理者だけが変えられる。変えたあとの管理のタブの中身を返す
 function healthPage_(ss, email, today, change) {
   var viewer = viewerByEmail_(ss, email);
   if (!viewer) return { viewer: null, today: today };
@@ -1374,13 +1416,13 @@ function healthPage_(ss, email, today, change) {
     out.forbidden = true;
     return out;
   }
-  if (change) out.changed = applyChange_(ss, viewer, change);
-  out.health = healthView_(ss, latestShares_(ss));
-  out.teams = allTeams_(ss).map(function (t) { return { id: t.id, name: t.name || '', parent: t.parent || '' }; });
-  out.roles = ROLE_NAMES.slice(1);
-  out.aliases = rows_(ss, SHEETS.aliases).filter(function (r) { return r['別名'] && r['案件名']; })
-    .map(function (r) { return { alias: r['別名'], name: r['案件名'] }; });
-  out.log = rows_(ss, SHEETS.changes).slice(-15).reverse(); // 直近の変更（新しい順）
+  if (change) {
+    var r = applyChange_(ss, viewer, change);
+    out.changed = r.count;
+    out.message = r.notes.join('\n');
+  }
+  var a = adminData_(ss, today);
+  Object.keys(a).forEach(function (k) { out[k] = a[k]; });
   return out;
 }
 
@@ -1391,7 +1433,7 @@ function healthPage_(ss, email, today, change) {
 // ページを開いたあとにシートが直に直されていたら、上書きせずに断る（base と今の値を比べる）。
 // 変えたものは「変更の記録」に残す。
 
-var MEMBER_FIELDS = { teams: 'チーム', roles: 'ロール', status: '状態', email: 'メール' };
+var MEMBER_FIELDS = { name: '名前', teams: 'チーム', roles: 'ロール', status: '状態', email: 'メール', notion_user: 'Notion ユーザー' };
 var TEAM_FIELDS = { name: '表示名', parent: '親チーム' };
 
 function changeError_(message) { return relayError_('bad_change', message); }
@@ -1410,8 +1452,12 @@ function applyChange_(ss, viewer, change) {
   lock.waitLock(10000);
   try {
     var kind = String(change && change.kind || '');
+    var notes = []; // 画面に返す知らせ（DM を送った・送れなかった など）
     var log;
-    if (kind === 'member') log = changeMember_(ss, change);
+    if (kind === 'member') log = changeMember_(ss, change, notes);
+    else if (kind === 'add_member') log = addMember_(ss, change, notes);
+    else if (kind === 'send_key') log = sendKeyFromPage_(ss, change, notes);
+    else if (kind === 'revoke_key') log = revokeKeyFromPage_(ss, change, notes);
     else if (kind === 'team') log = changeTeam_(ss, change);
     else if (kind === 'add_team') log = addTeam_(ss, change);
     else if (kind === 'merge') log = mergeProject_(ss, change);
@@ -1420,7 +1466,7 @@ function applyChange_(ss, viewer, change) {
     var at = nowJst_();
     var sh = sheet_(ss, SHEETS.changes);
     log.forEach(function (l) { sh.appendRow([at, viewer.name + '（' + viewer.email + '）', l[0], l[1], l[2], l[3]]); });
-    return log.length;
+    return { count: log.length, notes: notes };
   } finally {
     lock.releaseLock();
   }
@@ -1441,7 +1487,7 @@ function sameList_(a, b) {
   return norm(a) === norm(b);
 }
 
-function changeMember_(ss, change) {
+function changeMember_(ss, change, notes) {
   var rows = rows_(ss, SHEETS.members);
   var idx = -1;
   for (var i = 0; i < rows.length; i++) if (rows[i]['Slack ID'] && rows[i]['Slack ID'] === change.slack_id) { idx = i; break; }
@@ -1449,7 +1495,7 @@ function changeMember_(ss, change) {
   var cur = memberFromRow_(rows[idx], idx + 2);
   var teams = allTeams_(ss);
   var set = change.set || {}, base = change.base || {};
-  var now = { teams: cur.teams, roles: cur.roles, status: cur.status, email: cur.email || '' };
+  var now = { name: cur.name || '', teams: cur.teams, roles: cur.roles, status: cur.status, email: cur.email || '', notion_user: cur.notion_user || '' };
   var next = {};
   Object.keys(set).forEach(function (k) {
     if (!MEMBER_FIELDS[k]) throw changeError_('変えられない項目です: ' + k);
@@ -1459,30 +1505,15 @@ function changeMember_(ss, change) {
         : String(now[k]) === String(base[k] === undefined ? '' : base[k]);
     if (!same) throw relayError_('conflict', cur.name + ' さんの' + MEMBER_FIELDS[k] + 'は、ページを開いたあとに変わっています。ページを開き直してください');
   });
-  if ('teams' in set) {
-    next.teams = (Array.isArray(set.teams) ? set.teams : []).map(function (id) {
-      var t = teamById_(teams, String(id).trim());
-      if (!t) throw changeError_('チーム「' + id + '」は「チーム」シートにありません');
-      return t.id;
-    });
-  }
-  if ('roles' in set) {
-    next.roles = (Array.isArray(set.roles) ? set.roles : []).map(function (r) { return String(r).trim(); })
-      .filter(function (r) { return r && r !== 'メンバー'; });
-    next.roles.forEach(function (r) { if (ROLE_NAMES.indexOf(r) < 0) throw changeError_('ロール「' + r + '」は使えません'); });
-    next.roles = uniq_(next.roles);
-  }
+  if ('name' in set) next.name = checkName_(set.name);
+  if ('teams' in set) next.teams = checkTeams_(teams, set.teams);
+  if ('roles' in set) next.roles = checkRoles_(set.roles);
   if ('status' in set) {
     next.status = String(set.status);
     if (['有効', STOPPED].indexOf(next.status) < 0) throw changeError_('状態は「有効」か「停止」です');
   }
-  if ('email' in set) {
-    next.email = plainText_(set.email, 'メール').toLowerCase();
-    if (next.email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(next.email)) throw changeError_('メールの形ではありません');
-    rows.forEach(function (r, i) {
-      if (i !== idx && next.email && String(r['メール']).trim().toLowerCase() === next.email) throw changeError_('そのメールは ' + r['名前'] + ' さんが使っています');
-    });
-  }
+  if ('email' in set) next.email = checkEmail_(rows, idx, set.email);
+  if ('notion_user' in set) next.notion_user = checkNotion_(set.notion_user);
   // システム管理者が1人もいなくならないように
   var after = rows.map(function (r, i) {
     var m = memberFromRow_(r, i + 2);
@@ -1501,7 +1532,113 @@ function changeMember_(ss, change) {
     log.push([cur.name + '（' + cur.slack_id + '）', MEMBER_FIELDS[k], before, value]);
   });
   if (log.length) writeCells_(ss, SHEETS.members, idx + 2, fields);
+  // 管理者・役員になった人には、ページの場所を DM で知らせる
+  if (next.roles && (next.status || cur.status) !== STOPPED) {
+    var gained = viewerRoles_(next.roles).filter(function (r) { return viewerRoles_(cur.roles).indexOf(r) < 0; });
+    if (gained.length) notifyViewer_({ name: next.name || cur.name, slack_id: cur.slack_id }, gained, notes);
+  }
   return log;
+}
+
+// 台帳に人を足す。鍵は送らない（「鍵を送る」は別。ミエタスクを使わず、ページを見るだけの人もいるため）
+function addMember_(ss, change, notes) {
+  var rows = rows_(ss, SHEETS.members);
+  var name = checkName_(change.name);
+  var sid = String(change.slack_id || '').trim().toUpperCase();
+  if (!/^[UW][A-Z0-9]{6,}$/.test(sid)) throw changeError_('Slack ID は U から始まる英数字です（Slack のプロフィールの「︙」→「メンバーIDをコピー」）');
+  rows.forEach(function (r) { if (String(r['Slack ID']).toUpperCase() === sid) throw changeError_('その Slack ID は ' + r['名前'] + ' さんとして台帳にあります'); });
+  var m = {
+    '名前': name, 'Slack ID': sid, 'メール': checkEmail_(rows, -1, change.email),
+    'チーム': checkTeams_(allTeams_(ss), change.teams || []).join(', '), 'ロール': checkRoles_(change.roles || []).join(', '),
+    '状態': '有効', 'Notion ユーザー': checkNotion_(change.notion_user),
+  };
+  var sh = sheet_(ss, SHEETS.members);
+  var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  sh.appendRow(head.map(function (h) { return m[String(h).trim()] || ''; }));
+  var gained = viewerRoles_(list_(m['ロール']));
+  if (gained.length) notifyViewer_({ name: name, slack_id: sid }, gained, notes);
+  return [[name + '（' + sid + '）', '追加', '', ['チーム: ' + (m['チーム'] || 'なし'), 'ロール: ' + (m['ロール'] || 'メンバー'), m['メール'] ? 'メール: ' + m['メール'] : ''].filter(String).join('・')]];
+}
+
+function memberBySlackId_(ss, sid) {
+  var rows = rows_(ss, SHEETS.members);
+  for (var i = 0; i < rows.length; i++) if (rows[i]['Slack ID'] && rows[i]['Slack ID'] === sid) return memberFromRow_(rows[i], i + 2);
+  throw changeError_('その人は台帳にいません');
+}
+
+// 鍵を作り直して本人に DM で送る。鍵はページに返さない（DM が送れなければ、台帳のメニューから発行してもらう）
+function sendKeyFromPage_(ss, change, notes) {
+  var m = memberBySlackId_(ss, String(change.slack_id || ''));
+  var key = newKey_(ss, m);
+  var r = dmKey_(m, key);
+  if (!r.ok) {
+    PropertiesService.getScriptProperties().deleteProperty('KEY_' + m.slack_id);
+    setCell_(ss, SHEETS.members, m.row, '鍵', '無効 ' + nowJst_().slice(0, 10));
+    throw changeError_(m.name + ' さんに DM を送れませんでした（' + r.error + '）。前の鍵も使えなくなっています。台帳のメニュー「選んだ人の鍵を発行する」から発行すると、鍵をその場で表示して手で渡せます');
+  }
+  notes.push(m.name + ' さんに鍵を DM で送りました。前の鍵があれば、それはもう使えません。');
+  return [[m.name + '（' + m.slack_id + '）', '鍵', m.key || '', 'DM で送った']];
+}
+
+function revokeKeyFromPage_(ss, change, notes) {
+  var m = memberBySlackId_(ss, String(change.slack_id || ''));
+  PropertiesService.getScriptProperties().deleteProperty('KEY_' + m.slack_id);
+  deleteKeyMessage_(m.slack_id);
+  setCell_(ss, SHEETS.members, m.row, '鍵', '無効 ' + nowJst_().slice(0, 10));
+  notes.push(m.name + ' さんの鍵を無効にしました。この時点からミエタスクは窓口を使えません。');
+  return [[m.name + '（' + m.slack_id + '）', '鍵', m.key || '', '無効にした']];
+}
+
+function checkName_(v) {
+  var t = plainText_(v, '名前');
+  if (!t) throw changeError_('名前が空です');
+  return t;
+}
+
+function checkTeams_(teams, v) {
+  return uniq_((Array.isArray(v) ? v : []).map(function (id) {
+    var t = teamById_(teams, String(id).trim());
+    if (!t) throw changeError_('チーム「' + id + '」は「チーム」シートにありません');
+    return t.id;
+  }));
+}
+
+function checkRoles_(v) {
+  var roles = (Array.isArray(v) ? v : []).map(function (r) { return String(r).trim(); }).filter(function (r) { return r && r !== 'メンバー'; });
+  roles.forEach(function (r) { if (ROLE_NAMES.indexOf(r) < 0) throw changeError_('ロール「' + r + '」は使えません'); });
+  return uniq_(roles);
+}
+
+// メールの形と、ほかの人と重なっていないか（idx はその人の行。足すときは -1）
+function checkEmail_(rows, idx, v) {
+  var email = plainText_(v, 'メール').toLowerCase();
+  if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw changeError_('メールの形ではありません');
+  rows.forEach(function (r, i) {
+    if (i !== idx && email && String(r['メール']).trim().toLowerCase() === email) throw changeError_('そのメールは ' + r['名前'] + ' さんが使っています');
+  });
+  return email;
+}
+
+// Notion のユーザーID（user://… でも、URL の末尾の32桁でもよい）。空なら MTD とひも付けない
+function checkNotion_(v) {
+  var t = plainText_(v, 'Notion ユーザー');
+  if (!t) return '';
+  var id = uuid_(t.replace(/^.*[\/:]/, ''));
+  if (!id) throw changeError_('Notion のユーザーIDは32桁の英数字です（ハイフンはあってもなくてもよい）');
+  return 'user://' + id;
+}
+
+function viewerRoles_(roles) { return (roles || []).filter(function (r) { return r === ROLE_MANAGER || r === ROLE_EXEC; }); }
+
+// 管理者・役員になった人に、ページの場所と見方を DM で知らせる（送れなくても台帳の変更は済ませる）
+function notifyViewer_(m, roles, notes) {
+  var url = PropertiesService.getScriptProperties().getProperty('DASHBOARD_URL');
+  if (!url) { notes.push('ページの URL がまだ分からないので、' + m.name + ' さんに案内の DM は送っていません'); return; }
+  var text = ':bar_chart: *ミエタスクのページが見られるようになりました*（' + roles.join('・') + '）\n' + url + '\n' +
+    '• 最初のタブで、見える範囲の人が、いまどの案件で何をしているか・どこで詰まっているかが分かります\n' +
+    '• 社内の Google アカウントで開いてください。タスクの題名やメール・DM の中身は出ません';
+  var r = slack_('chat.postMessage', { channel: m.slack_id, text: text });
+  notes.push(r.ok ? m.name + ' さんにページの案内を DM で送りました' : m.name + ' さんに案内の DM を送れませんでした（' + r.error + '）');
 }
 
 function changeTeam_(ss, change) {
@@ -1611,7 +1748,7 @@ function viewerByEmail_(ss, email) {
 }
 
 // システム管理者向け。動いているかどうかと、台帳の書き方の誤りだけで、案件の中身は入れない
-function healthView_(ss, shares) {
+function healthView_(ss, shares, today) {
   var counts = {};
   rows_(ss, SHEETS.daily).forEach(function (r) {
     var c = counts[r['Slack ID']];
@@ -1628,9 +1765,12 @@ function healthView_(ss, shares) {
       m.teams.forEach(function (t) { if (!teamById_(teams, t)) issues.push('チーム「' + t + '」が「チーム」シートにありません'); });
       if (!m.email) issues.push('メールが空です（ダッシュボードを開けません）');
       if (hasRole_(m, ROLE_MANAGER) && !m.teams.length) issues.push('管理者ですがチームが空です');
+      // 一目で分かる動き具合（3日より前から動いていなければ、毎朝の実行が止まっているかもしれない）
+      var state = m.status === STOPPED ? '停止' : /^無効/.test(m.key) ? '鍵を無効にした' : !m.key ? '鍵なし'
+        : !m.last_run ? 'セットアップ待ち' : today && String(m.last_run).slice(0, 10) < addDays_(today, -3) ? '止まっているかも' : '動いている';
       return {
         slack_id: m.slack_id, email: m.email || '', name: m.name, teams: m.teams, roles: m.roles.length ? m.roles : ['メンバー'], status: m.status,
-        last_run: m.last_run || '', version: m.version || '',
+        last_run: m.last_run || '', version: m.version || '', notion_user: m.notion_user || '', key: m.key || '', state: state,
         share_date: shares[m.slack_id] ? shares[m.slack_id].date : '', counts: counts[m.slack_id] || null, issues: issues,
       };
     });
