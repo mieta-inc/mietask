@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 )
 
 func cmdDoctor() int {
@@ -17,7 +18,11 @@ func cmdDoctor() int {
 		bad++
 		fmt.Printf("❌ %s: %s\n", label, detail)
 	}
-	warn := func(label, detail string) { fmt.Printf("⚠️ %s: %s\n", label, detail) }
+	warns := 0
+	warn := func(label, detail string) {
+		warns++
+		fmt.Printf("⚠️ %s: %s\n", label, detail)
+	}
 
 	fmt.Printf("mietask %s (%s/%s)\n", version, runtime.GOOS, runtime.GOARCH)
 	fmt.Printf("データ: %s\n\n", toSlash(homeDir()))
@@ -71,7 +76,8 @@ func cmdDoctor() int {
 				warn("前回の巡回", "まだ一度も巡回していません")
 			}
 		}
-		return doctorSummary(bad)
+		doctorUpkeep(ok, warn, time.Now())
+		return doctorSummary(bad, warns)
 	}
 
 	// 投稿先
@@ -125,12 +131,18 @@ func cmdDoctor() int {
 
 	// 管理台帳（使っている場合）
 	doctorRegistry(ok, ng, warn)
+	doctorUpkeep(ok, warn, time.Now())
 
-	return doctorSummary(bad)
+	return doctorSummary(bad, warns)
 }
 
-func doctorSummary(bad int) int {
+func doctorSummary(bad, warns int) int {
 	fmt.Println()
+	if bad == 0 && warns > 0 {
+		// 毎朝の実行が黙って止まっているときは ⚠ になる。「問題なし」で終えると見落とす
+		fmt.Printf("止まるほどの問題はありませんが、⚠️ が%d件あります。⚠️ の行を読んで確かめてください。\n", warns)
+		return 0
+	}
 	if bad == 0 {
 		fmt.Println("問題は見つかりませんでした。")
 		return 0

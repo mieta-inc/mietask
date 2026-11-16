@@ -93,6 +93,7 @@ func usage() {
   channel --name NAME                 投稿先のプライベートチャンネルを作る
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
+  autoupdate                          このプラグインの自動更新を Claude Code の設定に入れる
   delete --ts TS                      Botの投稿を消す
   paths home|tmp                      データの置き場所を出す
   setup --slack-id U --email E --name N   設定・台帳・投稿先チャンネルをまとめて用意する
@@ -168,6 +169,11 @@ func run(argv []string) int {
 		default:
 			fmt.Fprintf(os.Stderr, "不明な指定です: %s（home か tmp）\n", which)
 			return 2
+		}
+	case "autoupdate":
+		var a *args
+		if a, err = parseArgs(rest); err == nil {
+			err = cmdAutoUpdate(a.flags["dry-run"])
 		}
 	case "registry":
 		var a *args

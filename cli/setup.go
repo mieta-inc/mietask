@@ -149,7 +149,7 @@ func cmdSetup(a *args) error {
 		if len(names) > 0 {
 			fmt.Printf("管理台帳: 所属 %s\n", strings.Join(names, ", "))
 		} else {
-			fmt.Println("管理台帳: 所属チームなし（まとめチャンネルには出ません）")
+			fmt.Println("管理台帳: 所属チームなし")
 		}
 	}
 
@@ -163,7 +163,7 @@ func cmdSetup(a *args) error {
 			m := reg.member(slackID)
 			switch {
 			case m == nil:
-				fmt.Println("管理台帳: 未登録です。管理者に登録を頼んでください（登録されるまで、まとめチャンネルには出ません）")
+				fmt.Println("管理台帳: 未登録です。管理者に登録を頼んでください")
 			case strings.TrimSpace(m.Status) == statusStopped:
 				return errors.New("管理台帳でミエタスクの利用が停止されています。管理者に確認してください。")
 			default:
@@ -224,6 +224,13 @@ func cmdSetup(a *args) error {
 			return err
 		}
 	}
+	// 6. 自動更新（入れないと、直した版が届かない）。入れられなくてもセットアップは止めない
+	if st, err := ensureAutoUpdate(dry); err != nil {
+		fmt.Printf("自動更新: 入れられませんでした（%v）。README の「更新を受け取れるようにする」を見て手で入れてください\n", err)
+	} else {
+		fmt.Printf("自動更新: %s\n", st)
+	}
+
 	fmt.Printf("channel: %s\n", channel)
 	fmt.Printf("channel_name: %s\n", chName)
 	return nil
