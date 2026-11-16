@@ -28,7 +28,7 @@ func TestParseTeamCounts(t *testing.T) {
 	}
 }
 
-// 管理者向けに送るのは件数だけ。題名・本文・返信案は一切送らない。
+// 窓口に送るのは件数だけ。題名・本文・返信案は一切送らない。
 func TestSendTeamStatusSendsCountsOnly(t *testing.T) {
 	f := newFakeRelay(t)
 	useRelayKey(t, f, "s3cret")
@@ -72,7 +72,7 @@ func TestSendTeamStatusOldRelayDoesNotFail(t *testing.T) {
 	}
 }
 
-// 管理者の画面：チームで絞ると、件数もそのチームの人の分だけになる
+// システム管理者の画面：チームで絞ると、件数もそのチームの人の分だけになり、システム管理者の印は残る
 func TestRelayRegistryKeepsDailyOfFilteredMembers(t *testing.T) {
 	f := newFakeRelay(t)
 	useRelayKey(t, f, "s3cret")
@@ -82,5 +82,8 @@ func TestRelayRegistryKeepsDailyOfFilteredMembers(t *testing.T) {
 	}
 	if len(reg.Daily) != 1 || reg.Daily[0].SlackID != "UA" || reg.Daily[0].Week != 3 {
 		t.Errorf("pm1 の人の件数だけになっていない: %+v", reg.Daily)
+	}
+	if !reg.SystemAdmin {
+		t.Errorf("システム管理者の印が落ちている")
 	}
 }

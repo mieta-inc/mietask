@@ -7,8 +7,9 @@
  *    メンバーは一人ずつ別の鍵を持つ。窓口は鍵を確かめてから、その人の代わりに Slack へ投稿する。
  *    Botトークンはこのスクリプトの中（スクリプト プロパティ）にだけ置き、メンバーには配らない。
  *    メンバーが投稿できるのは、本人の投稿先だけ。チームのまとめチャンネルには各自の一覧を出さない
- *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。管理者向けには、各自から
- *    毎朝の件数（超過・今日・今週）だけを受け取り、「日々の状態」シートに残す。
+ *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。各自からは毎朝の件数
+ *    （超過・今日・今週）だけを受け取り、「日々の状態」シートに残す。件数は動作の点検用で、
+ *    見られるのはシステム管理者だけ（チームの管理者の状態把握には使わない。案件ごとに重さが違うため）。
  *    台帳で「停止」にした人、鍵を無効にした人は、その時点から何もできなくなる。
  *
  * 2. 管理者のメニュー（スプレッドシートの「ミエタスク」メニュー）
@@ -35,7 +36,9 @@
  *             各自のミエタスクが毎朝送る件数。このスクリプトが書く。件数のほかは受け取らない
  *   設定:     項目 / 値
  *             relay_url（この窓口の URL）・workspace（Slack のワークスペース名）・bot_username・bot_icon_url・
- *             notion_projects・notion_tasks（MTD の場所）
+ *             notion_projects・notion_tasks（MTD の場所）・
+ *             system_admins（システム管理者の Slack ID。カンマ区切り。全チームの管理者向けの情報と、
+ *             点検用の件数を見られる。不具合のときに確かめるため）
  */
 
 var SHEETS = {
@@ -153,7 +156,8 @@ var ACTIONS = {
     return {};
   },
 
-  // その日の件数（超過・今日・今週）を受け取る。管理者が状態をつかむのに使う。
+  // その日の件数（超過・今日・今週）を受け取る。システム管理者が動作を点検するのに使う
+  // （急に0件になった人がいれば、巡回が壊れているかもしれない）。チームの管理者には見せない。
   // 件数のほか（題名・メモ・出どころ）は、送られてきても受け取らない。
   status: function (ctx, body) {
     var c = body.counts || {};
@@ -234,31 +238,40 @@ function subtree_(teams, id) {
 }
 
 // 管理者の画面用。自分が管理者のチーム（と、その下のチーム）のメンバーだけを返す
+function isSystemAdmin_(ss, slackId) {
+  return list_(settings_(ss).system_admins).indexOf(slackId) >= 0;
+}
+
+// 管理者に返す中身。チームの管理者には、管理しているチームとその下のチームの人を返す。
+// システム管理者には、全チームの人と、点検用の件数（直近8日）も返す。
 function managedView_(ctx) {
   var teams = allTeams_(ctx.ss);
-  var mine = teams.filter(function (t) { return t.managers.indexOf(ctx.member.slack_id) >= 0; });
-  if (!mine.length) return null;
+  var admin = isSystemAdmin_(ctx.ss, ctx.member.slack_id);
+  var mine = admin ? teams : teams.filter(function (t) { return t.managers.indexOf(ctx.member.slack_id) >= 0; });
+  if (!mine.length && !admin) return null;
   var ids = {};
   mine.forEach(function (t) { subtree_(teams, t.id).forEach(function (id) { ids[id.toLowerCase()] = true; }); });
   var members = rows_(ctx.ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); })
     .filter(function (m) { return m.slack_id && m.teams.some(function (t) { return ids[t.toLowerCase()]; }); })
     .map(function (m) { delete m.row; return m; });
   var settings = settings_(ctx.ss);
-  var who = {};
-  members.forEach(function (m) { who[m.slack_id] = true; });
-  var since = addDays_(nowJst_().slice(0, 10), -7);
-  var daily = rows_(ctx.ss, SHEETS.daily)
-    .filter(function (r) { return who[r['Slack ID']] && r['日付'] >= since; })
-    .map(function (r) {
-      return { date: r['日付'], slack_id: r['Slack ID'], name: r['名前'],
-        overdue: count_(r['超過']), today: count_(r['今日']), week: count_(r['今週']), at: r['届いた時刻'] };
-    });
-  return {
+  var out = {
     teams: teams.filter(function (t) { return ids[t.id.toLowerCase()]; }),
     members: members,
     settings: { notion_projects: settings.notion_projects || '', notion_tasks: settings.notion_tasks || '' },
-    daily: daily,
+    system_admin: admin,
   };
+  if (admin) {
+    // 点検用の件数はシステム管理者にだけ返す
+    var since = addDays_(nowJst_().slice(0, 10), -7);
+    out.daily = rows_(ctx.ss, SHEETS.daily)
+      .filter(function (r) { return r['日付'] >= since; })
+      .map(function (r) {
+        return { date: r['日付'], slack_id: r['Slack ID'], name: r['名前'],
+          overdue: count_(r['超過']), today: count_(r['今日']), week: count_(r['今週']), at: r['届いた時刻'] };
+      });
+  }
+  return out;
 }
 
 function allowedChannel_(ctx, channel) {
@@ -601,7 +614,7 @@ function setupSheets() {
     SpreadsheetApp.newDataValidation().requireValueInList(['有効', STOPPED], true).build());
   var settings = sheet_(ss, SHEETS.settings);
   var have = settings_(ss);
-  var defaults = { relay_url: '', workspace: '', bot_username: 'ミエタスク', bot_icon_url: '', notion_projects: '', notion_tasks: '' };
+  var defaults = { relay_url: '', workspace: '', bot_username: 'ミエタスク', bot_icon_url: '', notion_projects: '', notion_tasks: '', system_admins: '' };
   Object.keys(defaults).forEach(function (k) {
     if (!(k in have)) settings.appendRow([k, defaults[k]]);
   });
