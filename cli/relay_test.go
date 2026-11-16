@@ -26,6 +26,8 @@ type fakeRelay struct {
 	stopped  bool
 	channels map[string]bool // 投稿してよいチャンネル
 	setups   int
+	statuses []map[string]any // 件数として届いたもの（送られた中身をそのまま控える）
+	noStatus bool             // 件数の受け取りを知らない古い窓口のふり
 }
 
 func newFakeRelay(t *testing.T) *fakeRelay {
@@ -69,6 +71,10 @@ func (f *fakeRelay) respond(b map[string]any) map[string]any {
 				"teams":    []any{map[string]any{"id": "pm", "name": "PM"}, map[string]any{"id": "pm1", "name": "PM1", "parent": "pm"}, map[string]any{"id": "pd", "name": "PD"}},
 				"members":  []any{map[string]any{"name": "A", "slack_id": "UA", "teams": []string{"pm1"}, "status": "有効", "last_run": "2026-11-16T07:00:00+09:00"}, map[string]any{"name": "B", "slack_id": "UB", "teams": []string{"pd"}, "status": "有効"}},
 				"settings": map[string]any{"notion_projects": "collection://p"},
+				"daily": []any{
+					map[string]any{"date": "2026-11-17", "slack_id": "UA", "name": "A", "overdue": 1, "today": 2, "week": 3, "at": "2026-11-17T07:04:00+09:00"},
+					map[string]any{"date": "2026-11-17", "slack_id": "UB", "name": "B", "overdue": 9, "today": 9, "week": 9, "at": "2026-11-17T07:05:00+09:00"},
+				},
 			},
 			"settings": map[string]any{"workspace": "mietahq"}}
 	case "setup":
@@ -81,6 +87,12 @@ func (f *fakeRelay) respond(b map[string]any) map[string]any {
 		}
 		f.posts = append(f.posts, b)
 		return map[string]any{"ok": true, "ts": fmt.Sprintf("1700000000.%06d", len(f.posts))}
+	case "status":
+		if f.noStatus {
+			break
+		}
+		f.statuses = append(f.statuses, b)
+		return map[string]any{"ok": true}
 	case "check":
 		return map[string]any{"ok": true, "bot": "ok", "me": map[string]any{"name": "山田 太郎"},
 			"teams":   []any{map[string]any{"id": "pd", "channel": "CPD"}},

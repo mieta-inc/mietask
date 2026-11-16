@@ -6,7 +6,9 @@
  * 1. 各メンバーの mietask の窓口
  *    メンバーは一人ずつ別の鍵を持つ。窓口は鍵を確かめてから、その人の代わりに Slack へ投稿する。
  *    Botトークンはこのスクリプトの中（スクリプト プロパティ）にだけ置き、メンバーには配らない。
- *    投稿できるのは、本人の投稿先と、所属チームのまとめチャンネルだけ。
+ *    メンバーが投稿できるのは、本人の投稿先だけ。チームのまとめチャンネルには各自の一覧を出さない
+ *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。管理者向けには、各自から
+ *    毎朝の件数（超過・今日・今週）だけを受け取り、「日々の状態」シートに残す。
  *    台帳で「停止」にした人、鍵を無効にした人は、その時点から何もできなくなる。
  *
  * 2. 管理者のメニュー（スプレッドシートの「ミエタスク」メニュー）
@@ -29,6 +31,8 @@
  *             投稿先・鍵・最後に動いた・バージョンは、このスクリプトが書く
  *   チーム:   チームID / 表示名 / 親チーム / まとめチャンネル / 管理者 / メモ
  *             親チームに pm と書けば、PM の管理者の画面に PM1 も入る。管理者は Slack ID をカンマ区切り
+ *   日々の状態: 日付 / Slack ID / 名前 / 超過 / 今日 / 今週 / 届いた時刻
+ *             各自のミエタスクが毎朝送る件数。このスクリプトが書く。件数のほかは受け取らない
  *   設定:     項目 / 値
  *             relay_url（この窓口の URL）・workspace（Slack のワークスペース名）・bot_username・bot_icon_url・
  *             notion_projects・notion_tasks（MTD の場所）
@@ -40,6 +44,7 @@ var SHEETS = {
     headers: ['名前', 'Slack ID', 'メール', 'チーム', '状態', 'Notion ユーザー', '投稿先', '鍵', '最後に動いた', 'バージョン', 'メモ'],
   },
   teams: { name: 'チーム', headers: ['チームID', '表示名', '親チーム', 'まとめチャンネル', '管理者', 'メモ'] },
+  daily: { name: '日々の状態', headers: ['日付', 'Slack ID', '名前', '超過', '今日', '今週', '届いた時刻'] },
   settings: { name: '設定', headers: ['項目', '値'] },
 };
 
@@ -97,12 +102,12 @@ var ACTIONS = {
     return result;
   },
 
-  // 親＋子スレッドを投稿する。own=true なら本人の投稿先（稼働も記録する）、そうでなければまとめチャンネル
+  // 親＋子スレッドを、本人の投稿先に投稿する（稼働も記録する）
   post: function (ctx, body) {
     var channel = String(body.channel || '');
     if (!channel) throw relayError_('bad_request', '投稿先がありません');
     if (!allowedChannel_(ctx, channel)) {
-      throw relayError_('forbidden_channel', 'この投稿先には投稿できません（本人の投稿先と、所属チームのまとめチャンネルだけ）');
+      throw relayError_('forbidden_channel', 'この投稿先には投稿できません（本人の投稿先だけ。チームのまとめには件数だけが届きます）');
     }
     var parent = String(body.parent || '');
     var replies = body.replies || [];
@@ -144,6 +149,16 @@ var ACTIONS = {
   },
 
   heartbeat: function (ctx, body) {
+    touch_(ctx, body);
+    return {};
+  },
+
+  // その日の件数（超過・今日・今週）を受け取る。管理者が状態をつかむのに使う。
+  // 件数のほか（題名・メモ・出どころ）は、送られてきても受け取らない。
+  status: function (ctx, body) {
+    var c = body.counts || {};
+    var now = nowJst_();
+    recordDaily_(ctx, now.slice(0, 10), { '超過': count_(c.overdue), '今日': count_(c.today), '今週': count_(c.week) }, now);
     touch_(ctx, body);
     return {};
   },
@@ -229,20 +244,67 @@ function managedView_(ctx) {
     .filter(function (m) { return m.slack_id && m.teams.some(function (t) { return ids[t.toLowerCase()]; }); })
     .map(function (m) { delete m.row; return m; });
   var settings = settings_(ctx.ss);
+  var who = {};
+  members.forEach(function (m) { who[m.slack_id] = true; });
+  var since = addDays_(nowJst_().slice(0, 10), -7);
+  var daily = rows_(ctx.ss, SHEETS.daily)
+    .filter(function (r) { return who[r['Slack ID']] && r['日付'] >= since; })
+    .map(function (r) {
+      return { date: r['日付'], slack_id: r['Slack ID'], name: r['名前'],
+        overdue: count_(r['超過']), today: count_(r['今日']), week: count_(r['今週']), at: r['届いた時刻'] };
+    });
   return {
     teams: teams.filter(function (t) { return ids[t.id.toLowerCase()]; }),
     members: members,
     settings: { notion_projects: settings.notion_projects || '', notion_tasks: settings.notion_tasks || '' },
+    daily: daily,
   };
 }
 
 function allowedChannel_(ctx, channel) {
-  if (channel === ctx.member.channel) return true;
-  var teams = allTeams_(ctx.ss);
-  return ctx.member.teams.some(function (id) {
-    var t = teamById_(teams, id);
-    return t && t.channel === channel;
-  });
+  // メンバーが投稿できるのは本人の投稿先だけ。チームのまとめに各自の一覧を出さない
+  return !!channel && channel === ctx.member.channel;
+}
+
+// ---------------------------------------------------------------- 日々の状態（件数だけ）
+
+function count_(v) {
+  var n = Math.floor(Number(v));
+  return isFinite(n) && n >= 0 ? Math.min(n, 9999) : 0;
+}
+
+// 1人1日1行。同じ日に2回届いたら（手で回し直したときなど）上書きする
+function recordDaily_(ctx, date, counts, at) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var sh = sheet_(ctx.ss, SHEETS.daily);
+    var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
+    var col = indexOf_(head);
+    var row = -1;
+    if (sh.getLastRow() >= 2) {
+      var vals = sh.getRange(2, 1, sh.getLastRow() - 1, head.length).getDisplayValues();
+      for (var i = 0; i < vals.length; i++) {
+        if (vals[i][col['日付']] === date && vals[i][col['Slack ID']] === ctx.member.slack_id) { row = i + 2; break; }
+      }
+    }
+    var rec = { '日付': date, 'Slack ID': ctx.member.slack_id, '名前': ctx.member.name, '届いた時刻': at };
+    Object.keys(counts).forEach(function (k) { rec[k] = counts[k]; });
+    var line = head.map(function (h) { return h in rec ? rec[h] : ''; });
+    if (row < 0) row = sh.getLastRow() + 1;
+    // 日付を文字列のまま置く（スプレッドシートが日付に変えると、見た目が変わって同じ日を探せなくなる）
+    sh.getRange(row, col['日付'] + 1).setNumberFormat('@');
+    sh.getRange(row, 1, 1, line.length).setValues([line]);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 'yyyy-MM-dd' に日数を足す（暦の上の計算。時刻帯に左右されない）
+function addDays_(ymd, n) {
+  var p = String(ymd).split('-').map(Number);
+  var d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
+  return d.getUTCFullYear() + '-' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2);
 }
 
 function touch_(ctx, body) {

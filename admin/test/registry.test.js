@@ -42,6 +42,8 @@ class Sheet {
       setValue(v) { sh.ensure(r, c); sh.cells[r - 1][c - 1] = v; return this; },
       setFontWeight() { return this; },
       setDataValidation() { return this; },
+      setNumberFormat() { return this; },
+      getDisplayValues() { return this.getValues().map(row => row.map(v => String(v ?? ''))); },
       getRow() { return r; },
     };
   }
@@ -297,7 +299,7 @@ test('鍵の発行から、投稿先の用意・投稿まで', () => {
   assert.strictEqual(cell(env, 'メンバー', 2, '最後に動いた'), '2026-11-16T07:00:00+09:00');
 });
 
-test('投稿できるのは本人の投稿先と所属チームのまとめチャンネルだけ', () => {
+test('投稿できるのは本人の投稿先だけ。所属チームのまとめチャンネルにも出せない', () => {
   const env = load();
   seed(env);
   select(env, 'チーム', 3); // pm1
@@ -307,7 +309,10 @@ test('投稿できるのは本人の投稿先と所属チームのまとめチ�
   env.ctx.menuCreateTeamChannel();
   const pd = cell(env, 'チーム', 5, 'まとめチャンネル');
   const k = issue(env, 2); // U1 は pm1
-  assert.ok(call(env, { id: k.i, k: k.k, action: 'post', channel: pm1, parent: 'まとめ' }).ok);
+  // 自分のチームのまとめにも出せない（各自の一覧には DM や非公開チャンネルの内容が入るため）
+  const own = call(env, { id: k.i, k: k.k, action: 'post', channel: pm1, parent: 'まとめ' });
+  assert.strictEqual(own.error, 'forbidden_channel');
+  assert.strictEqual(env.slack.channels[pm1].messages.length, 0);
   const ng = call(env, { id: k.i, k: k.k, action: 'post', channel: pd, parent: '他チーム' });
   assert.strictEqual(ng.error, 'forbidden_channel');
   const ng2 = call(env, { id: k.i, k: k.k, action: 'post', channel: 'C999', parent: 'x' });
@@ -358,6 +363,53 @@ test('管理者の画面：管理しているチームとその下のチーム�
   assert.deepStrictEqual(me.managed.members.map(m => m.slack_id).sort(), ['U1', 'U9', 'UM']);
   // 一般メンバーには見えない
   const k1 = issue(env, 2);
+  assert.strictEqual(call(env, { id: k1.i, k: k1.k, action: 'me' }).managed, null);
+});
+
+test('日々の状態：件数だけを受け取り、同じ日に2回届いたら上書きする', () => {
+  const env = load();
+  seed(env);
+  const k = issue(env, 2); // U1
+  const r = call(env, { id: k.i, k: k.k, action: 'status', version: '0.7.0',
+    counts: { overdue: 5, today: '5', week: 23 },
+    // 件数のほかは受け取らない
+    title: '秘密の案件', memo: 'DMで聞いた話', parent: '一覧の全部' });
+  assert.ok(r.ok, JSON.stringify(r));
+  const sh = env.ss.getSheetByName('日々の状態');
+  assert.strictEqual(sh.cells.length, 2, '1人1日1行になっていない');
+  assert.strictEqual(cell(env, '日々の状態', 2, '日付'), '2026-11-16');
+  assert.strictEqual(cell(env, '日々の状態', 2, '名前'), '山田 太郎');
+  assert.deepStrictEqual(['超過', '今日', '今週'].map(h => cell(env, '日々の状態', 2, h)), [5, 5, 23]);
+  const all = JSON.stringify(env.ss.sheets);
+  for (const leak of ['秘密の案件', 'DMで聞いた話', '一覧の全部']) {
+    assert.ok(!all.includes(leak), '件数のほかが台帳に残っている: ' + leak);
+  }
+  assert.strictEqual(cell(env, 'メンバー', 2, '最後に動いた'), '2026-11-16T07:00:00+09:00');
+  assert.strictEqual(cell(env, 'メンバー', 2, 'バージョン'), '0.7.0');
+
+  // 同じ日にもう一度：行は増えず上書き。壊れた値は0
+  call(env, { id: k.i, k: k.k, action: 'status', counts: { overdue: 2, today: -1, week: 'たくさん' } });
+  assert.strictEqual(sh.cells.length, 2);
+  assert.deepStrictEqual(['超過', '今日', '今週'].map(h => cell(env, '日々の状態', 2, h)), [2, 0, 0]);
+});
+
+test('管理者の画面：直近8日の件数が、管理しているチームの人の分だけ返る', () => {
+  const env = load();
+  seed(env);
+  const k1 = issue(env, 2); // U1（pm1）
+  const k2 = issue(env, 4); // U2（pd。UM の管理外）
+  call(env, { id: k1.i, k: k1.k, action: 'status', counts: { overdue: 1, today: 2, week: 3 } });
+  call(env, { id: k2.i, k: k2.k, action: 'status', counts: { overdue: 9, today: 9, week: 9 } });
+  // 8日より前の行は返さない
+  const sh = env.ss.getSheetByName('日々の状態');
+  sh.appendRow(sh.cells[0].map(h => ({ '日付': '2026-11-08', 'Slack ID': 'U1', '名前': '山田 太郎', '超過': 7 })[h] ?? ''));
+
+  const km = issue(env, 3); // UM は pm の管理者
+  const me = call(env, { id: km.i, k: km.k, action: 'me' });
+  assert.deepStrictEqual(me.managed.daily, [
+    { date: '2026-11-16', slack_id: 'U1', name: '山田 太郎', overdue: 1, today: 2, week: 3, at: '2026-11-16T07:00:00+09:00' },
+  ]);
+  // 一般メンバーには、自分の分も含めて見えない
   assert.strictEqual(call(env, { id: k1.i, k: k1.k, action: 'me' }).managed, null);
 });
 

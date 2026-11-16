@@ -143,6 +143,7 @@ type relayMeResult struct {
 		Teams    []Team            `json:"teams"`
 		Members  []Member          `json:"members"`
 		Settings map[string]string `json:"settings"`
+		Daily    []DailyStatus     `json:"daily"`
 	} `json:"managed"`
 	Settings map[string]string `json:"settings"`
 }
@@ -252,7 +253,7 @@ func relayRegistry(k *relayKey, teamID string) (*Registry, error) {
 	if me.Managed == nil {
 		return nil, errors.New("管理しているチームがありません（管理台帳の「チーム」の管理者に入っていません）")
 	}
-	reg := &Registry{Teams: me.Managed.Teams, Members: me.Managed.Members, Settings: me.Managed.Settings}
+	reg := &Registry{Teams: me.Managed.Teams, Members: me.Managed.Members, Settings: me.Managed.Settings, Daily: me.Managed.Daily}
 	if teamID == "" {
 		return reg, nil
 	}
