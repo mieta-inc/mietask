@@ -2,11 +2,14 @@ package main
 
 // 管理者向けの、案件ごとの要約。
 //
-// MTD はプログラム（授業）の案件のタスク管理で、社内の案件やリードしている仕事は出てこない。
-// それを管理者が知れるように、各自のミエタスクが毎朝、その日の一覧を「案件ごとの状態」にまとめて窓口に送る。
-// 送るのは 案件名・状態・次の期限 だけ。タスクの題名、メールや DM の文面、社外の人の名前は入れない
+// 各自のミエタスクが毎朝、その日の一覧（Slack・メール・議事録・MTD から拾ったタスク）を「案件ごとの状態」に束ねて窓口に送る。
+// 管理者のページ（ダッシュボード）は、これと MTD を合わせて案件ごとに並べる。
+// 送るのは 案件名・状態・次の期限・残りの件数・超過の件数 だけ。タスクの題名、メールや DM の文面、人の名前は入れない
 // （作るのは本人の手元の Claude。ここでは形と、リンク・メンション・メールアドレスが無いことを確かめる）。
 // 管理者に届くのと同じものを、本人のチャンネルにも出す（何が上に見えているかを本人が知っているように）。
+//
+// 案件の名前が人によってゆれないよう、束ねる前に `mietask share hints` で手がかり（本人の MTD の案件名と、
+// 同じチームの人が最近使った案件名）を受け取り、同じ案件ならその名前を使う。
 
 import (
 	"encoding/json"
@@ -21,16 +24,19 @@ import (
 )
 
 type shareItem struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
-	Due   string `json:"due,omitempty"`
+	Name    string `json:"name"`
+	State   string `json:"state"`
+	Due     string `json:"due,omitempty"`
+	Open    *int   `json:"open,omitempty"`    // まとまりの中で、まだ終わっていないタスクの数
+	Overdue *int   `json:"overdue,omitempty"` // そのうち期限が過ぎているものの数
 }
 
 var shareStates = []string{"動いている", "相手待ち", "期限が過ぎたものあり"}
 
 const (
-	shareMax     = 12
-	shareNameMax = 40
+	shareMax      = 20
+	shareNameMax  = 40
+	shareCountMax = 999
 )
 
 var (
@@ -52,7 +58,7 @@ func loadShare(path string) ([]shareItem, error) {
 		return nil, fmt.Errorf("%s のJSONが壊れています: %v", path, err)
 	}
 	if doc.Items == nil {
-		return nil, fmt.Errorf("%s に items がありません（MTD のほかの案件が無ければ空の配列にする）", path)
+		return nil, fmt.Errorf("%s に items がありません（案件が1つも無ければ空の配列にする）", path)
 	}
 	if len(*doc.Items) > shareMax {
 		return nil, fmt.Errorf("要約は%d件までです（%d件あります）。案件をまとめてください", shareMax, len(*doc.Items))
@@ -76,9 +82,46 @@ func loadShare(path string) ([]shareItem, error) {
 		case due != "" && !reYMD.MatchString(due):
 			return nil, fmt.Errorf("%s の期限は yyyy-mm-dd で書きます（%q になっています）", where, due)
 		}
-		out = append(out, shareItem{Name: name, State: state, Due: due})
+		open, err := shareCount(it, "open", where+" の残りの件数（open）")
+		if err != nil {
+			return nil, err
+		}
+		overdue, err := shareCount(it, "overdue", where+" の超過の件数（overdue）")
+		if err != nil {
+			return nil, err
+		}
+		if open != nil && overdue != nil && *overdue > *open {
+			return nil, fmt.Errorf("%s の超過の件数（%d）が残りの件数（%d）より多くなっています", where, *overdue, *open)
+		}
+		out = append(out, shareItem{Name: name, State: state, Due: due, Open: open, Overdue: overdue})
 	}
 	return out, nil
+}
+
+// shareCount は件数（0〜999の整数）を読む。書かれていなければ nil。
+func shareCount(it map[string]any, key, label string) (*int, error) {
+	v, ok := it[key]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	f, ok := v.(float64)
+	if !ok || f < 0 || f > shareCountMax || f != float64(int(f)) {
+		return nil, fmt.Errorf("%s は0〜%dの整数で書きます（%v になっています）", label, shareCountMax, v)
+	}
+	n := int(f)
+	return &n, nil
+}
+
+// countLabel は「残り5件（うち超過2件）」。件数が無ければ空。
+func countLabel(it shareItem) string {
+	if it.Open == nil {
+		return ""
+	}
+	s := fmt.Sprintf("残り%d件", *it.Open)
+	if it.Overdue != nil && *it.Overdue > 0 {
+		s += fmt.Sprintf("（うち超過%d件）", *it.Overdue)
+	}
+	return s
 }
 
 func contains(xs []string, s string) bool {
@@ -102,12 +145,15 @@ func shortDate(ymd string) string {
 
 // sharePreview は本人のチャンネルに出す「管理者に届く内容」。
 func sharePreview(items []shareItem) string {
-	lines := []string{":eyes: *管理者に届く内容*（チームのまとめに、案件ごとの状態だけが出ます。タスクの題名・メールやDMの中身は届きません）"}
+	lines := []string{":eyes: *管理者に届く内容*（管理者のページに、案件ごとの状態だけが出ます。タスクの題名・メールやDMの中身は届きません）"}
 	if len(items) == 0 {
-		lines = append(lines, "• MTDのほかの案件なし")
+		lines = append(lines, "• 案件なし")
 	}
 	for _, it := range items {
 		l := "• " + it.Name + " — " + it.State
+		if c := countLabel(it); c != "" {
+			l += "・" + c
+		}
 		if it.Due != "" {
 			l += "（次の期限 " + shortDate(it.Due) + "）"
 		}
@@ -136,7 +182,52 @@ func sendShare(items []shareItem, dryRun bool) error {
 	return nil
 }
 
+// cmdShareHints は案件の名前の手がかりを窓口から受け取って出す。
+// 手がかりが取れなくても失敗にしない（手がかり無しで束ねればよいため）。理由は出す。
+func cmdShareHints() error {
+	k := relayKeyFromFile()
+	if k == nil {
+		fmt.Println("管理台帳を使っていないので、手がかりはありません。案件の名前は自分で決めてください。")
+		return nil
+	}
+	out, err := relayCall(k, "hints", relayVersionParams())
+	if err != nil {
+		var re *RelayError
+		if errors.As(err, &re) && re.Code == "unknown_action" {
+			fmt.Println("窓口がまだ手がかりに対応していません。案件の名前は自分で決めてください。")
+			return nil
+		}
+		return err
+	}
+	names := func(key string) []string {
+		var xs []string
+		raw, _ := out[key].([]any)
+		for _, v := range raw {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				xs = append(xs, s)
+			}
+		}
+		return xs
+	}
+	show := func(title string, xs []string) {
+		fmt.Println(title)
+		if len(xs) == 0 {
+			fmt.Println("  （なし）")
+		}
+		for _, x := range xs {
+			fmt.Println("  • " + x)
+		}
+	}
+	show("MTDで自分が関わっている案件（同じ案件なら、この名前をそのまま使う）:", names("mtd"))
+	if e, _ := out["mtd_error"].(string); e != "" {
+		fmt.Println("  ⚠ MTDを読めませんでした: " + e)
+	}
+	show("同じチームの人が最近使った案件名（同じ案件なら、この名前に寄せる）:", names("team"))
+	return nil
+}
+
 func cmdShare(path string, dryRun bool) error {
+
 	if path == "" {
 		return errors.New("--file が要ります。")
 	}
