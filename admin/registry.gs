@@ -711,8 +711,9 @@ var MOVING = ['進行中', '継続', '確認待ち']; // 今動いているタ�
 var STUCK = ['確認待ち', '保留']; // 詰まっていそうなタスク
 var ROLES = [['CC担当', 'CC'], ['PM担当', 'PM'], ['SP担当', 'SP'], ['プロジェクトリード', 'リード'], ['連携メンバー', '連携']];
 var COUNTED = ['CC', 'PM', 'SP']; // 並行の数に入れる役割（リード・連携は社内案件・手伝いが多いので、別に出す）
-var LIST_MAX = 5;
-var ROLLUP_FOOTER = '一人ずつの詳細はスレッドに。出どころはMTD（Notion）と、各自のミエタスクが送る案件ごとの要約です（タスクの題名・メールやDMの中身は入っていません）。';
+var UNREADABLE = '（読めない案件）'; // インテグレーションが接続されていないページ
+var PARENT_MAX = 4; // 一覧の1行に名前を出す案件の数（残りは「ほかN件」）
+var ROLLUP_FOOTER = '一人ずつの案件はスレッドに。出どころはMTD（Notion）と、各自のミエタスクが送る案件ごとの状態です（タスクの題名・メールやDMの中身は入っていません）。';
 
 // ---------------------------------------------------------------- Notion
 
@@ -858,7 +859,7 @@ function notionReader_(ss) {
     title: function (pid) {
       if (!(pid in cache.titles)) {
         try { cache.titles[pid] = pageTitle_(notion_('get', 'pages/' + uuid_(pid))) || '（名前なし）'; }
-        catch (err) { cache.titles[pid] = '（読めない案件）'; }
+        catch (err) { cache.titles[pid] = UNREADABLE; }
       }
       return cache.titles[pid];
     },
@@ -881,11 +882,6 @@ function dateLabel_(ymd, today) {
 
 function uniq_(arr) { return arr.filter(function (x, i) { return arr.indexOf(x) === i; }); }
 
-function capList_(items, sep) {
-  if (items.length <= LIST_MAX) return items.join(sep);
-  return items.slice(0, LIST_MAX).join(sep) + sep + '…他' + (items.length - LIST_MAX) + '件';
-}
-
 function byEnd_(a, b) { return (a.end || '9999') < (b.end || '9999') ? -1 : (a.end || '9999') > (b.end || '9999') ? 1 : 0; }
 function byStart_(a, b) { return a.start < b.start ? -1 : a.start > b.start ? 1 : 0; }
 
@@ -906,12 +902,15 @@ function memberState_(projects, tasks, today, titleOf) {
   var past = {};
   live.forEach(function (p) { if (!isRun(p) && p.start && p.start <= today) past[p.id] = true; });
 
-  var moving = {}, elsewhere = {}, outside = [], stuck = [];
+  var moving = {}, elsewhere = {}, outside = [], stuck = [], stuckIn = {};
   tasks.forEach(function (t) {
     var pids = t.projects.length ? t.projects : [''];
     pids.forEach(function (pid) {
       var where = !pid ? '' : mine[pid] ? mine[pid].name : titleOf(pid);
-      if (STUCK.indexOf(t.status) >= 0) stuck.push({ where: where, task: t.name, status: t.status });
+      if (STUCK.indexOf(t.status) >= 0) {
+        stuck.push({ where: where, task: t.name, status: t.status });
+        if (mine[pid] && stuckIn[pid] !== '確認待ち') stuckIn[pid] = t.status;
+      }
       if (MOVING.indexOf(t.status) < 0) return;
       if (!pid) outside.push(t.name);
       else if (mine[pid]) (moving[pid] = moving[pid] || []).push(t.name);
@@ -923,94 +922,101 @@ function memberState_(projects, tasks, today, titleOf) {
   counted.forEach(function (p) { if (p.kind) history[p.kind] = (history[p.kind] || 0) + 1; });
   var others = outside.length + Object.keys(elsewhere).reduce(function (n, k) { return n + elsewhere[k].tasks.length; }, 0);
   return { today: today, projects: live, running: running, leading: leading, starting: starting, ending: ending, past: past,
-    moving: moving, elsewhere: elsewhere, outside: uniq_(outside), others: others, stuck: stuck, history: history,
+    moving: moving, elsewhere: elsewhere, outside: uniq_(outside), others: others, stuck: stuck, stuckIn: stuckIn, history: history,
     hasTasks: tasks.length > 0 };
 }
 
-function mtdEmpty_(st) { return !st || (!st.projects.length && !st.hasTasks); }
+// 1人ぶんの案件を、出どころ（MTD・ミエタスク）を分けずに1つの並びにする。
+// rank の小さい順（気にすべきもの → 動いているもの → 担当外 → これから始まるもの）、同じ rank は期限・終了日の近い順。
+// short は一覧の1行に添える短い説明、long はスレッドの1行に出す説明。
+var RANK = { overdue: 0, waiting: 1, running: 2, helping: 3, starting: 4 };
 
-// MTD の分の「並行の数と予定」。事実だけで、見立ては書かない
-function mtdSummary_(st) {
-  if (mtdEmpty_(st)) return 'MTDに担当なし';
-  var parts = [st.running.length ? 'MTD ' + st.running.length + '案件' : 'MTDの担当案件なし'];
-  if (st.ending.length) parts.push('うち' + st.ending.length + '件が' + md_(st.ending[st.ending.length - 1].end) + 'までに終了予定');
-  if (st.starting.length) parts.push(st.starting.length + '件が始まる予定（最初は' + md_(st.starting[0].start) + '）');
-  if (st.leading.length) parts.push('リード・連携' + st.leading.length + '件');
-  if (!st.running.length && !st.leading.length && st.others) parts.push('担当外の案件・案件外で動いているタスクあり');
-  return parts.join('、');
+function periodLabel_(p, today) {
+  return p.end ? '〜' + dateLabel_(p.end, today) : p.start ? dateLabel_(p.start, today) + '〜' : '';
 }
 
-// ミエタスクの分。届いていなければそう書く（空いているとは書かない）
-function shareSummary_(sh, today) {
-  if (!sh) return '';
-  if (sh.date !== today) return 'ミエタスクは' + md_(sh.date) + 'から届いていない';
-  if (!sh.items.length) return 'ほかの案件なし（ミエタスク）';
-  var names = sh.items.map(function (i) { return i.name; });
-  return 'ほかに' + names.length + '案件（' + names.slice(0, 3).join('、') + (names.length > 3 ? ' ほか' : '') + '）';
-}
-
-// 一覧の1行と、スレッドの見出しに使う
-function memberLine_(st, sh, today, linked) {
-  var mtd = linked ? mtdSummary_(st) : 'MTDのひも付けなし（システム管理者が対応）';
-  var share = shareSummary_(sh, today);
-  if (linked && mtdEmpty_(st) && !share) return 'MTDに担当なし。ミエタスクの要約も届いておらず、ここからは見えない';
-  return [mtd, share].filter(String).join('／');
-}
-
-function stuckLabel_(s) { return (s.where ? s.where + '：' : '') + s.task + '[' + s.status + ']'; }
-
-function mtdDetail_(st) {
-  if (mtdEmpty_(st)) return ['・担当なし'];
-  var lines = [];
-  var shown = {};
-  var withTasks = st.projects.filter(function (p) { return st.moving[p.id] && !st.past[p.id]; }).sort(byEnd_);
-  withTasks.forEach(function (p, i) {
-    shown[p.id] = true;
-    if (i >= LIST_MAX) return;
-    var when = p.end ? '〜' + dateLabel_(p.end, st.today) : p.start ? dateLabel_(p.start, st.today) + '〜' : '';
-    var tag = [p.roles.join('・'), when].filter(String).join('・');
-    lines.push('・' + p.name + (tag ? '（' + tag + '）' : '') + '　今: ' + capList_(st.moving[p.id], '、'));
+function mtdItems_(st) {
+  if (!st) return [];
+  var items = [];
+  var current = st.running.concat(st.leading);
+  current.forEach(function (p) {
+    var role = p.roles.join('・');
+    var period = periodLabel_(p, st.today);
+    var stuck = st.stuckIn[p.id] ? st.stuckIn[p.id] + 'あり' : '';
+    var state = stuck || (st.moving[p.id] ? '動いている' : '');
+    items.push({
+      name: p.name, rank: stuck ? RANK.waiting : RANK.running, due: p.end || '',
+      short: [role, period, stuck].filter(String).join('・'),
+      long: [role, state].filter(String).join('・') + (period ? '（' + period + '）' : ''),
+    });
   });
-  if (withTasks.length > LIST_MAX) lines.push('・…他' + (withTasks.length - LIST_MAX) + '件（今動いているタスクのある案件）');
-  var end = st.ending.filter(function (p) { return !shown[p.id]; });
-  if (end.length) lines.push('・もうすぐ終わる: ' + capList_(end.map(function (p) { shown[p.id] = true; return p.name + '（' + md_(p.end) + '）'; }), '、'));
-  var start = st.starting.filter(function (p) { return !shown[p.id]; });
-  if (start.length) lines.push('・もうすぐ始まる: ' + capList_(start.map(function (p) { shown[p.id] = true; return p.name + '（' + md_(p.start) + '〜）'; }), '、'));
-  var rest = st.running.filter(function (p) { return !shown[p.id]; });
-  if (rest.length) lines.push('・他に ' + capList_(rest.map(function (p) { return p.name; }), '、'));
-  var lead = st.leading.filter(function (p) { return !shown[p.id]; });
-  if (lead.length) lines.push('・リード・連携: ' + capList_(lead.map(function (p) { return p.name + '（' + p.roles.join('・') + '）'; }), '、'));
-  var other = Object.keys(st.elsewhere).map(function (k) { return st.elsewhere[k]; });
-  if (other.length) lines.push('・担当外の案件: ' + capList_(other.map(function (o) { return o.name + '（' + o.tasks.length + '件）'; }), '、'));
-  if (st.outside.length) lines.push('・案件外: ' + capList_(st.outside, '、'));
-  if (st.stuck.length) lines.push('・詰まり: ' + capList_(st.stuck.map(stuckLabel_), '、'));
-  var stale = st.projects.filter(function (p) { return st.moving[p.id] && st.past[p.id]; }).sort(byEnd_);
-  if (stale.length) {
-    lines.push('・期間が過ぎてもタスクが動いている案件: ' + capList_(stale.map(function (p) {
-      return p.name + (p.end ? '（〜' + dateLabel_(p.end, st.today) + '）' : '');
-    }), '、'));
+  var unreadable = 0;
+  Object.keys(st.elsewhere).forEach(function (k) {
+    var o = st.elsewhere[k];
+    if (o.name === UNREADABLE) { unreadable++; return; }
+    items.push({ name: o.name, rank: RANK.helping, due: '', short: '担当外', long: '担当外・タスク' + o.tasks.length + '件' });
+  });
+  // 名前を読めない案件は1つにまとめる（並べても何の案件か分からないため）
+  if (unreadable) {
+    items.push({ name: '名前を読めない案件', rank: RANK.helping, due: '', short: '担当外・' + unreadable + '件',
+      long: '担当外・' + unreadable + '件（Notion のインテグレーションが接続されていない）' });
   }
-  var kinds = Object.keys(st.history).sort(function (a, b) { return st.history[b] - st.history[a]; });
-  if (kinds.length) lines.push('・これまでの担当（MTD・終了分を含む）：' + kinds.map(function (k) { return k + ' ' + st.history[k]; }).join('・'));
-  return lines;
+  st.starting.forEach(function (p) {
+    var role = p.roles.join('・');
+    var from = dateLabel_(p.start, st.today) + '〜';
+    items.push({ name: p.name, rank: RANK.starting, due: p.start,
+      short: [role, from].filter(String).join('・'), long: [role, 'これから'].filter(String).join('・') + '（' + from + '）' });
+  });
+  return items;
 }
 
-function shareItemLine_(it, today) {
-  return '・' + it.name + ' — ' + it.state + (it.due ? '（次の期限 ' + dateLabel_(it.due, today) + '）' : '');
+function shareItems_(sh, today) {
+  if (!sh || sh.date !== today) return [];
+  return sh.items.map(function (it) {
+    var due = it.due ? dateLabel_(it.due, today) : '';
+    var rank = it.state === '期限が過ぎたものあり' ? RANK.overdue : it.state === '相手待ち' ? RANK.waiting : RANK.running;
+    var word = it.state === '期限が過ぎたものあり' ? '期限超過あり' : it.state === '相手待ち' ? '相手待ち' : '';
+    return { name: it.name, rank: rank, due: it.due || '',
+      short: [word, due ? '期限' + due : ''].filter(String).join('・'), long: it.state + (due ? '（次の期限 ' + due + '）' : '') };
+  });
 }
 
-function shareDetail_(sh, today) {
-  if (sh.date !== today) return ['*ミエタスクから*', '・' + md_(sh.date) + 'から届いていない（毎朝の実行が止まっているかもしれない）'];
-  var at = String(sh.at || '').slice(11, 16);
-  var head = '*ミエタスクから*（' + md_(sh.date) + (at ? ' ' + at.replace(/^0/, '') : '') + '時点）';
-  if (!sh.items.length) return [head, '・MTDのほかの案件なし'];
-  return [head].concat(sh.items.map(function (it) { return shareItemLine_(it, today); }));
+function memberItems_(st, sh, today) {
+  var items = shareItems_(sh, today).concat(mtdItems_(st));
+  return items.map(function (it, i) { it.i = i; return it; }).sort(function (a, b) {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    var da = a.due || '9999', db = b.due || '9999';
+    if (da !== db) return da < db ? -1 : 1;
+    return a.i - b.i;
+  });
 }
 
-function memberDetail_(m, st, sh, today, linked) {
-  var lines = ['■ *' + m.name + '* — ' + memberLine_(st, sh, today, linked)];
-  if (linked) lines = lines.concat(['*MTDから*'], mtdDetail_(st));
-  if (sh) lines = lines.concat(shareDetail_(sh, today));
+// 見えていない理由（空いているとは書かない）
+function memberNotes_(st, sh, today, linked) {
+  var notes = [];
+  if (!linked) notes.push('MTD未連携（システム管理者が対応）');
+  if (!sh) notes.push('ミエタスク未着');
+  else if (sh.date !== today) notes.push('ミエタスクは' + md_(sh.date) + 'から未着');
+  return notes.length ? '※' + notes.join('・') : '';
+}
+
+function memberLine_(m, items, notes) {
+  var shown = items.slice(0, PARENT_MAX).map(function (it) { return it.name + (it.short ? '（' + it.short + '）' : ''); });
+  var body = items.length ? shown.join('、') + (items.length > PARENT_MAX ? ' ほか' + (items.length - PARENT_MAX) + '件' : '') : '見える案件なし';
+  return '• *' + m.name + '*　' + body + (notes ? '　' + notes : '');
+}
+
+// スレッドの見出しに、いま抱えている案件の数を出す（どれくらいやっているかの目安）
+function memberCount_(items) {
+  var now = items.filter(function (it) { return it.rank !== RANK.starting; }).length;
+  var later = items.length - now;
+  if (!items.length) return '見える案件なし';
+  return '今の案件 ' + now + '件' + (later ? '、これから始まる ' + later + '件' : '');
+}
+
+function memberDetail_(m, items, notes) {
+  var lines = ['■ *' + m.name + '* — ' + memberCount_(items) + (notes ? '　' + notes : '')];
+  items.forEach(function (it) { lines.push('・' + it.name + (it.long ? ' — ' + it.long : '')); });
   return fit_(lines);
 }
 
@@ -1039,10 +1045,10 @@ function buildRollup_(ss, team, today, reader) {
     var linked = !!nid_(m.notion_user);
     var st = linked ? memberState_(reader.projects(m.notion_user), reader.tasks(m.notion_user), today, reader.title) : null;
     var sh = shares[m.slack_id] || null;
-    var line = '• *' + m.name + '*　' + memberLine_(st, sh, today, linked);
-    if (st && st.stuck.length) line += '　:warning: ' + stuckLabel_(st.stuck[0]) + (st.stuck.length > 1 ? ' ほか' + (st.stuck.length - 1) + '件' : '');
-    lines.push(line);
-    if (!mtdEmpty_(st) || sh) replies.push(memberDetail_(m, st, sh, today, linked));
+    var items = memberItems_(st, sh, today);
+    var notes = memberNotes_(st, sh, today, linked);
+    lines.push(memberLine_(m, items, notes));
+    if (items.length) replies.push(memberDetail_(m, items, notes));
   });
   var head = ':busts_in_silhouette: *' + (team.name || team.id) + 'の状況*　' + md_(today) + '時点';
   var parent = fit_([head, ''].concat(lines.length ? lines : ['対象のメンバーがいません'], ['', ROLLUP_FOOTER]));
