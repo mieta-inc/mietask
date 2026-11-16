@@ -131,6 +131,9 @@ func run(argv []string) int {
 					fmt.Fprintf(os.Stderr, "警告: まとめへの投稿に失敗しました。自分のチャンネルへの投稿は済んでいるので、やり直さないでください。\n%v\n", terr)
 				}
 			}
+			if err == nil && !a.flags["dry-run"] {
+				consumeInput(a.get("payload"))
+			}
 		}
 	case "channel":
 		var a *args
@@ -211,6 +214,23 @@ func run(argv []string) int {
 	return code
 }
 
+// consumeInput は使い終わった入力ファイル（返信・巡回結果・投稿内容）を消す。
+//
+// 前の実行のファイルが残っていると、次の実行でそのファイルを書き直せなかったときに
+// 古い中身がそのまま読まれてしまう。Claude の書き込みの道具は、読んでいない既存ファイルの
+// 上書きを断るので、実際に起きる（2026-11-16、前日の「3完了」が今日の別の3番に当たった）。
+// 使い終わったら消しておけば、次の実行はファイルが無い状態から始まり、書き込みに失敗しても
+// 「ファイルが見つからない」と止まるだけで、古い中身で台帳を書き換えることはない。
+// --dry-run のときは消さない（そのあと本番で同じファイルを使うため）。
+func consumeInput(path string) {
+	if path == "" {
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "警告: 使い終わった %s を消せませんでした。次の実行の前に消してください: %v\n", path, err)
+	}
+}
+
 func runSync(rest []string) (int, error) {
 	a, err := parseArgs(rest, "allow-no-mapping", "no-carry-over", "reopen")
 	if err != nil {
@@ -231,12 +251,20 @@ func runSync(rest []string) (int, error) {
 		if a.has("only-user") {
 			only = a.get("only-user")
 		}
-		return 0, cmdComplete(a.get("replies"), a.flags["allow-no-mapping"], only, dry)
+		err := cmdComplete(a.get("replies"), a.flags["allow-no-mapping"], only, dry)
+		if err == nil && !dry {
+			consumeInput(a.get("replies"))
+		}
+		return 0, err
 	case "upsert":
 		if !a.has("findings") {
 			return 1, errors.New("--findings が要ります。")
 		}
-		return 0, cmdUpsert(a.get("findings"), !a.flags["no-carry-over"], dry)
+		err := cmdUpsert(a.get("findings"), !a.flags["no-carry-over"], dry)
+		if err == nil && !dry {
+			consumeInput(a.get("findings"))
+		}
+		return 0, err
 	case "status":
 		ids := a.pos[1:]
 		if len(ids) == 0 || !a.has("status") {
