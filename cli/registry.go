@@ -116,6 +116,18 @@ type Registry struct {
 	Daily []DailyStatus `json:"daily,omitempty"`
 	// SystemAdmin は、この中身をシステム管理者として受け取ったか
 	SystemAdmin bool `json:"system_admin,omitempty"`
+	// Shared は各自のミエタスクが毎朝送る、案件ごとの要約（直近8日のうち最新のもの）。
+	// 案件名・状態・次の期限だけで、タスクの題名やメール・DM の中身は入らない
+	Shared []SharedSummary `json:"shared,omitempty"`
+}
+
+// SharedSummary は1人ぶんの案件ごとの要約
+type SharedSummary struct {
+	SlackID string      `json:"slack_id"`
+	Name    string      `json:"name"`
+	Date    string      `json:"date"`
+	At      string      `json:"at"`
+	Items   []shareItem `json:"items"`
 }
 
 // DailyStatus は1人1日分の件数。題名やメモは入らない
@@ -555,6 +567,11 @@ func filterRegistry(reg *Registry, ids []string) *Registry {
 	for _, d := range reg.Daily {
 		if who[d.SlackID] {
 			out.Daily = append(out.Daily, d)
+		}
+	}
+	for _, s := range reg.Shared {
+		if who[s.SlackID] {
+			out.Shared = append(out.Shared, s)
 		}
 	}
 	return out

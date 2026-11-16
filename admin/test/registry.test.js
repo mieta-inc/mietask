@@ -209,7 +209,7 @@ function project(id, name, o) {
   return { object: 'page', id, properties: {
     '': { type: 'title', title: [{ plain_text: name }] },
     'CC担当': people(o.cc || []), 'PM担当': people(o.pm || []), 'SP担当': people(o.sp || []),
-    'プロジェクトリード': people(o.lead || []),
+    'プロジェクトリード': people(o.lead || []), '連携メンバー': people(o.collab || []),
     'ステータス': { type: 'status', status: { name: o.status || '進行中' } },
     'プログラム種別': { type: 'select', select: o.kind ? { name: o.kind } : null },
     '期間': date(o.start, o.end), '授業初日': date(o.first),
@@ -653,6 +653,7 @@ function seedRollup(env) {
     project('b1000000-0000-0000-0000-000000000007', '昔の案件', { cc: [ME], kind: 'WS', status: '完了', start: '2025-01-01', end: '2025-03-01' }),
     project('b1000000-0000-0000-0000-000000000008', 'リードだけの案件', { lead: [ME], kind: 'WS', start: '2026-04-01', end: '2027-03-31' }),
     project('b1000000-0000-0000-0000-000000000009', '他人の案件', { cc: [OTHER], kind: 'WS', start: '2026-04-01', end: '2027-03-31' }),
+    project('b1000000-0000-0000-0000-00000000000a', '26洗足FW', { cc: [ME], kind: 'FW', start: '2026-04-01', end: '2026-05-29' }),
   ];
   const P = n => `b1000000-0000-0000-0000-00000000000${n}`;
   env.notion.sources.tasks = [
@@ -664,6 +665,8 @@ function seedRollup(env) {
     task('t6', '終わったタスク', { who: [ME], status: '完了', projects: [P(1)] }),
     task('t7', 'まだのタスク', { who: [ME], status: '未着手', projects: [P(2)] }),
     task('t8', '他人のタスク', { who: [OTHER], status: '進行中', projects: [P(1)] }),
+    task('t9', '当日ワークシート作成', { who: [ME], status: '進行中', projects: [P('a')] }), // 期間が過ぎても閉じられていない
+    task('t10', '動画修正', { who: [ME], status: '進行中' }), // 同じ名前は1つにまとめる
   ];
   return channel;
 }
@@ -682,31 +685,35 @@ test('チームのまとめ：MTDの案件と状態だけを、1人1行の一覧
   const [parent, detail] = msgs;
   assert.strictEqual(detail.thread_ts, parent.ts);
   assert.match(parent.text, /\*PDの状況\*　11\/16時点/);
-  assert.ok(parent.text.includes('• *別チーム*　4案件、うち2件が12/4までに終了予定、1件が始まる予定（最初は1/10）　:warning: 26順天高1ゼミ：中間プレゼン②スライド[確認待ち]'), parent.text);
-  assert.ok(parent.text.includes('• *ひも付けなし*　MTDとのひも付けが台帳に無く'), parent.text);
-  assert.ok(parent.text.includes('• *MTDに無い人*　MTDに担当案件もタスクもなく、ここからは見えない'), parent.text);
+  const line = 'MTD 4案件、うち2件が12/4までに終了予定、1件が始まる予定（最初は1/10）、リード・連携1件';
+  assert.ok(parent.text.includes('• *別チーム*　' + line + '　:warning: 26順天高1ゼミ：中間プレゼン②スライド[確認待ち]'), parent.text);
+  assert.ok(parent.text.includes('• *ひも付けなし*　MTDのひも付けなし（システム管理者が対応）'), parent.text);
+  assert.ok(parent.text.includes('• *MTDに無い人*　MTDに担当なし。ミエタスクの要約も届いておらず、ここからは見えない'), parent.text);
   assert.ok(!parent.text.includes('停止の人'));
-  assert.ok(parent.text.includes('MTDの外の仕事は入っていません'));
+  assert.ok(parent.text.includes('タスクの題名・メールやDMの中身は入っていません'));
 
   const want = [
-    '■ *別チーム* — 4案件、うち2件が12/4までに終了予定、1件が始まる予定（最初は1/10）',
+    '■ *別チーム* — ' + line,
+    '*MTDから*',
     '・26順天高1ゼミ（CC・〜3/31）　今: 2学期ワークシート最終化、中間プレゼン②スライド、講師コンテンツ',
     '・もうすぐ終わる: 26広島学院 高1 FW（11/20）、大阪国際WS（12/4）',
     '・もうすぐ始まる: 1月開始WS（1/10〜）',
     '・他に 都立大崎',
-    '・担当外の案件: 他人の案件（ワークシート作成）',
+    '・リード・連携: リードだけの案件（リード）',
+    '・担当外の案件: 他人の案件（1件）',
     '・案件外: 動画修正',
     '・詰まり: 26順天高1ゼミ：中間プレゼン②スライド[確認待ち]',
-    '・これまでの担当（MTD・終了分を含む）：WS 4・ゼミ 1・FW 1',
+    '・期間が過ぎてもタスクが動いている案件: 26洗足FW（〜2026/5/29）',
+    '・これまでの担当（MTD・終了分を含む）：WS 4・FW 2・ゼミ 1',
   ];
   assert.strictEqual(detail.text, want.join('\n'));
   for (const t of [parent.text, detail.text]) {
-    assert.ok(!/中止した案件|リードだけ|終わったタスク|まだのタスク|他人のタスク|超過|:warning:超過/.test(t.replace(':warning: 26', '')), t);
+    assert.ok(!/中止した案件|終わったタスク|まだのタスク|他人のタスク|超過|:warning:超過/.test(t.replace(':warning: 26', '')), t);
   }
   // Notion にはバージョンを付けて問い合わせ、担当は CC・PM・SP だけで引く
   assert.ok(env.notion.calls.length > 0 && env.notion.calls.every(c => c.version === '2025-09-03'));
   const q = env.notion.calls.find(c => c.path === 'data_sources/proj/query');
-  assert.deepStrictEqual(q.body.filter.or.map(f => f.property), ['CC担当', 'PM担当', 'SP担当']);
+  assert.deepStrictEqual(q.body.filter.or.map(f => f.property), ['CC担当', 'PM担当', 'SP担当', 'プロジェクトリード', '連携メンバー']);
   assert.strictEqual(JSON.parse(env.props.ROLLUP_LAST).problems.length, 0);
 });
 
@@ -823,4 +830,72 @@ test('祝日：振替休日・国民の休日・移動する祝日も含めて�
     '2027-04-29', '2027-05-03', '2027-05-04', '2027-05-05', '2027-07-19', '2027-08-11', '2027-09-20', '2027-09-23',
     '2027-10-11', '2027-11-03', '2027-11-23']);
   assert.strictEqual(env.ctx.isJpHoliday_('2026-11-16'), false);
+});
+
+test('チームのまとめ：担当案件が無くても、ほかで動いているタスクがあればそう書く', () => {
+  const env = load();
+  seedRollup(env);
+  env.notion.sources.proj = env.notion.sources.proj.filter(p => ['CC担当', 'PM担当', 'SP担当', 'プロジェクトリード']
+    .every(k => p.properties[k].people.every(u => u.id !== ME)));
+  env.ctx.dailyRollup();
+  const ch = cell(env, 'チーム', 5, 'まとめチャンネル');
+  assert.ok(env.slack.channels[ch].messages[0].text.includes('• *別チーム*　MTDの担当案件なし、担当外の案件・案件外で動いているタスクあり'),
+    env.slack.channels[ch].messages[0].text);
+});
+
+test('案件の要約：決まった形だけを受け取り、まとめにMTDと分けて出す。本人の題名やリンクは受け取らない', () => {
+  const env = load();
+  const channel = seedRollup(env);
+  const k2 = issue(env, 4); // U2（MTDに案件あり）
+  const k4 = issue(env, 7); // U4（MTDに何もない）
+  // 決まった形でないものは断る
+  const bad = [
+    [{ name: 'https://example.com の件', state: '動いている' }],
+    [{ name: '山田さん <@U123> から', state: '動いている' }],
+    [{ name: 'a@example.com への返信', state: '動いている' }],
+    [{ name: '改行\nあり', state: '動いている' }],
+    [{ name: 'ミエマス', state: '忙しい' }],
+    [{ name: 'ミエマス', state: '動いている', due: '11/20' }],
+    Array.from({ length: 13 }, (_, i) => ({ name: '案件' + i, state: '動いている' })),
+  ];
+  for (const items of bad) assert.strictEqual(call(env, { id: k4.i, k: k4.k, action: 'share', items }).error, 'bad_share', JSON.stringify(items));
+  // 決まった項目のほか（題名・メモ・出どころ）は送られてきても残さない
+  const r = call(env, { id: k4.i, k: k4.k, action: 'share', items: [
+    { name: 'ミエマス（ポータル・MTD）', state: '動いている', due: '2026-11-20', title: '秘密の題名', source: 'DM' },
+    { name: '社内DX', state: '相手待ち' },
+    { name: 'TiB講義スライド', state: '期限が過ぎたものあり' },
+    { name: '採用', state: '動いている' },
+  ] });
+  assert.ok(r.ok, JSON.stringify(r));
+  const sheet = env.ss.getSheetByName('案件の要約');
+  assert.ok(!JSON.stringify(sheet.cells).includes('秘密の題名'));
+  // 前の日の要約しか無い人は「届いていない」と書く（空いているとは書かない）
+  sheet.appendRow(sheet.cells[0].map(h => ({ '日付': '2026-11-13', 'Slack ID': 'U2', '名前': '別チーム', '要約': '[]', '届いた時刻': '2026-11-13T07:00:00+09:00' })[h] ?? ''));
+
+  env.ctx.dailyRollup();
+  const msgs = env.slack.channels[channel].messages;
+  const parent = msgs[0].text;
+  assert.ok(parent.includes('• *MTDに無い人*　MTDに担当なし／ほかに4案件（ミエマス（ポータル・MTD）、社内DX、TiB講義スライド ほか）'), parent);
+  assert.ok(parent.includes('リード・連携1件／ミエタスクは11/13から届いていない'), parent);
+  const d4 = msgs.find(m => m.text.startsWith('■ *MTDに無い人*')).text;
+  assert.strictEqual(d4, [
+    '■ *MTDに無い人* — MTDに担当なし／ほかに4案件（ミエマス（ポータル・MTD）、社内DX、TiB講義スライド ほか）',
+    '*MTDから*',
+    '・担当なし',
+    '*ミエタスクから*（11/16 7:00時点）',
+    '・ミエマス（ポータル・MTD） — 動いている（次の期限 11/20）',
+    '・社内DX — 相手待ち',
+    '・TiB講義スライド — 期限が過ぎたものあり',
+    '・採用 — 動いている',
+  ].join('\n'));
+  const d2 = msgs.find(m => m.text.startsWith('■ *別チーム*')).text;
+  assert.ok(d2.endsWith('*ミエタスクから*\n・11/13から届いていない（毎朝の実行が止まっているかもしれない）'), d2);
+
+  // 管理者の画面にも、担当チームの人の要約が返る
+  const st = env.ss.getSheetByName('設定');
+  st.cells.forEach(r => { if (r[0] === 'system_admins') r[1] = ''; });
+  const teams = env.ss.getSheetByName('チーム');
+  teams.cells[4][teams.cells[0].indexOf('管理者')] = 'U2';
+  const mgr = call(env, { id: k2.i, k: k2.k, action: 'me' }).managed;
+  assert.deepStrictEqual(mgr.shared.map(x => [x.slack_id, x.date, x.items.length]).sort(), [['U2', '2026-11-13', 0], ['U4', '2026-11-16', 4]]);
 });

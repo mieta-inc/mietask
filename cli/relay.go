@@ -144,6 +144,7 @@ type relayMeResult struct {
 		Members  []Member          `json:"members"`
 		Settings map[string]string `json:"settings"`
 		Daily    []DailyStatus     `json:"daily"`
+		Shared   []SharedSummary   `json:"shared"`
 		// SystemAdmin はシステム管理者か（全チームの管理者向け情報と、点検用の件数が返る）
 		SystemAdmin bool `json:"system_admin"`
 	} `json:"managed"`
@@ -255,7 +256,7 @@ func relayRegistry(k *relayKey, teamID string) (*Registry, error) {
 	if me.Managed == nil {
 		return nil, errors.New("管理しているチームがありません（管理台帳の「チーム」の管理者にも、「設定」のシステム管理者にも入っていません）")
 	}
-	reg := &Registry{Teams: me.Managed.Teams, Members: me.Managed.Members, Settings: me.Managed.Settings, Daily: me.Managed.Daily, SystemAdmin: me.Managed.SystemAdmin}
+	reg := &Registry{Teams: me.Managed.Teams, Members: me.Managed.Members, Settings: me.Managed.Settings, Daily: me.Managed.Daily, Shared: me.Managed.Shared, SystemAdmin: me.Managed.SystemAdmin}
 	if teamID == "" {
 		return reg, nil
 	}

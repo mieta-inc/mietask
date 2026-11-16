@@ -28,6 +28,8 @@ type fakeRelay struct {
 	setups   int
 	statuses []map[string]any // 件数として届いたもの（送られた中身をそのまま控える）
 	noStatus bool             // 件数の受け取りを知らない古い窓口のふり
+	shares   []map[string]any // 要約として届いたもの（送られた中身をそのまま控える）
+	noShare  bool             // 要約の受け取りを知らない古い窓口のふり
 }
 
 func newFakeRelay(t *testing.T) *fakeRelay {
@@ -93,6 +95,12 @@ func (f *fakeRelay) respond(b map[string]any) map[string]any {
 			break
 		}
 		f.statuses = append(f.statuses, b)
+		return map[string]any{"ok": true}
+	case "share":
+		if f.noShare {
+			break
+		}
+		f.shares = append(f.shares, b)
 		return map[string]any{"ok": true}
 	case "check":
 		return map[string]any{"ok": true, "bot": "ok", "me": map[string]any{"name": "山田 太郎"},

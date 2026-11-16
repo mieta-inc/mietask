@@ -7,8 +7,9 @@
  *    メンバーは一人ずつ別の鍵を持つ。窓口は鍵を確かめてから、その人の代わりに Slack へ投稿する。
  *    Botトークンはこのスクリプトの中（スクリプト プロパティ）にだけ置き、メンバーには配らない。
  *    メンバーが投稿できるのは、本人の投稿先だけ。チームのまとめチャンネルには各自の一覧を出さない
- *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。各自からは毎朝の件数
- *    （超過・今日・今週）だけを受け取り、「日々の状態」シートに残す。件数は動作の点検用で、
+ *    （タスクの題名には DM・非公開チャンネル・メールの内容が入るため）。各自からは毎朝、
+ *    案件ごとの要約（案件名・状態・次の期限）を受け取り、チームのまとめに出す。同じものが本人のチャンネルにも出る。
+ *    あわせて件数（超過・今日・今週）も受け取り「日々の状態」シートに残す。件数は動作の点検用で、
  *    見られるのはシステム管理者だけ（チームの管理者の状態把握には使わない。案件ごとに重さが違うため）。
  *    台帳で「停止」にした人、鍵を無効にした人は、その時点から何もできなくなる。
  *
@@ -17,8 +18,9 @@
  *    退職者の投稿先の片付け。スプレッドシートを編集できる人が管理者になる。
  *
  * 3. チームのまとめ（平日の朝、まとめチャンネルへ。祝日は出さない）
- *    MTD（Notion）から、メンバーごとに「どの案件を持っていて、それぞれ今何を作っているか」を読んで出す。
- *    各自のミエタスクの中身・件数は使わない。Notion の鍵はスクリプト プロパティ（NOTION_TOKEN）にだけ置く。
+ *    MTD（Notion）のプログラムの案件と、各自のミエタスクが送る案件ごとの要約（社内の案件・リードしている仕事など、
+ *    MTD に出てこないもの）を合わせて、メンバーごとに出す。ミエタスクのタスクの題名・件数は使わない。
+ *    Notion の鍵はスクリプト プロパティ（NOTION_TOKEN）にだけ置く。
  *    出す前に、まとめチャンネルが非公開で、参加者が管理者・システム管理者・Bot だけかを確かめる。
  *
  * ■ 最初の1回
@@ -42,6 +44,9 @@
  *             親チームに pm と書けば、PM の管理者の画面に PM1 も入る。管理者は Slack ID をカンマ区切り
  *   日々の状態: 日付 / Slack ID / 名前 / 超過 / 今日 / 今週 / 届いた時刻
  *             各自のミエタスクが毎朝送る件数。このスクリプトが書く。件数のほかは受け取らない
+ *   案件の要約: 日付 / Slack ID / 名前 / 要約 / 届いた時刻
+ *             各自のミエタスクが毎朝送る、案件ごとの状態（案件名・状態・次の期限）。このスクリプトが書く。
+ *             タスクの題名・メールや DM の文面は受け取らない。チームのまとめと管理者の画面に出る
  *   設定:     項目 / 値
  *             relay_url（この窓口の URL）・workspace（Slack のワークスペース名）・bot_username・bot_icon_url・
  *             notion_projects・notion_tasks（MTD の場所）・
@@ -56,6 +61,7 @@ var SHEETS = {
   },
   teams: { name: 'チーム', headers: ['チームID', '表示名', '親チーム', 'まとめチャンネル', '管理者', 'メモ'] },
   daily: { name: '日々の状態', headers: ['日付', 'Slack ID', '名前', '超過', '今日', '今週', '届いた時刻'] },
+  shares: { name: '案件の要約', headers: ['日付', 'Slack ID', '名前', '要約', '届いた時刻'] },
   settings: { name: '設定', headers: ['項目', '値'] },
 };
 
@@ -164,6 +170,16 @@ var ACTIONS = {
     return {};
   },
 
+  // 案件ごとの要約を受け取る（チームのまとめに出す）。案件名・状態・次の期限だけを残し、ほかは捨てる。
+  // 本人の手元で、タスクの題名やメール・DM の文面を入れずに作ったもの。同じものが本人のチャンネルにも出ている
+  share: function (ctx, body) {
+    var items = cleanShare_(body.items);
+    var now = nowJst_();
+    upsertDaily_(ctx, SHEETS.shares, now.slice(0, 10), { '要約': JSON.stringify(items) }, now);
+    touch_(ctx, body);
+    return { items: items.length };
+  },
+
   // その日の件数（超過・今日・今週）を受け取る。システム管理者が動作を点検するのに使う
   // （急に0件になった人がいれば、巡回が壊れているかもしれない）。チームの管理者には見せない。
   // 件数のほか（題名・メモ・出どころ）は、送られてきても受け取らない。
@@ -269,6 +285,14 @@ function managedView_(ctx) {
     settings: { notion_projects: settings.notion_projects || '', notion_tasks: settings.notion_tasks || '' },
     system_admin: admin,
   };
+  // 案件ごとの要約（ミエタスクから）。担当チームの人の分だけ、直近8日以内のもの
+  var shares = latestShares_(ctx.ss);
+  var since8 = addDays_(nowJst_().slice(0, 10), -7);
+  out.shared = members.filter(function (m) { return shares[m.slack_id] && shares[m.slack_id].date >= since8; })
+    .map(function (m) {
+      var sh = shares[m.slack_id];
+      return { slack_id: m.slack_id, name: m.name, date: sh.date, at: sh.at, items: sh.items };
+    });
   if (admin) {
     // 点検用の件数はシステム管理者にだけ返す
     var since = addDays_(nowJst_().slice(0, 10), -7);
@@ -294,12 +318,16 @@ function count_(v) {
   return isFinite(n) && n >= 0 ? Math.min(n, 9999) : 0;
 }
 
-// 1人1日1行。同じ日に2回届いたら（手で回し直したときなど）上書きする
 function recordDaily_(ctx, date, counts, at) {
+  upsertDaily_(ctx, SHEETS.daily, date, counts, at);
+}
+
+// 1人1日1行。同じ日に2回届いたら（手で回し直したときなど）上書きする
+function upsertDaily_(ctx, def, date, fields, at) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    var sh = sheet_(ctx.ss, SHEETS.daily);
+    var sh = sheet_(ctx.ss, def);
     var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(function (h) { return String(h).trim(); });
     var col = indexOf_(head);
     var row = -1;
@@ -310,7 +338,7 @@ function recordDaily_(ctx, date, counts, at) {
       }
     }
     var rec = { '日付': date, 'Slack ID': ctx.member.slack_id, '名前': ctx.member.name, '届いた時刻': at };
-    Object.keys(counts).forEach(function (k) { rec[k] = counts[k]; });
+    Object.keys(fields).forEach(function (k) { rec[k] = fields[k]; });
     var line = head.map(function (h) { return h in rec ? rec[h] : ''; });
     if (row < 0) row = sh.getLastRow() + 1;
     // 日付を文字列のまま置く（スプレッドシートが日付に変えると、見た目が変わって同じ日を探せなくなる）
@@ -319,6 +347,40 @@ function recordDaily_(ctx, date, counts, at) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------- 案件の要約（ミエタスクから）
+
+var SHARE_STATES = ['動いている', '相手待ち', '期限が過ぎたものあり'];
+var SHARE_MAX = 12;
+
+// 決まった形のものだけを受け取る。リンク・メールアドレス・メンションは入れさせない（中身が漏れる入口になるため）
+function cleanShare_(raw) {
+  if (!Array.isArray(raw)) throw relayError_('bad_share', '要約（items）がありません');
+  if (raw.length > SHARE_MAX) throw relayError_('bad_share', '要約は' + SHARE_MAX + '件までです');
+  return raw.map(function (it, i) {
+    var where = 'items[' + i + ']';
+    var name = String((it && it.name) || '').trim();
+    if (!name) throw relayError_('bad_share', where + ' の案件名が空です');
+    if (name.length > 40) throw relayError_('bad_share', where + ' の案件名が長すぎます（40文字まで）');
+    if (/[\r\n<>@]|https?:/i.test(name)) throw relayError_('bad_share', where + ' の案件名に改行・リンク・メンション・メールアドレスは入れられません');
+    var state = String(it.state || '');
+    if (SHARE_STATES.indexOf(state) < 0) throw relayError_('bad_share', where + ' の状態は ' + SHARE_STATES.join('・') + ' のどれかです');
+    var due = String(it.due || '');
+    if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw relayError_('bad_share', where + ' の期限は yyyy-MM-dd です');
+    return { name: name, state: state, due: due };
+  });
+}
+
+// メンバーごとの最新の要約（Slack ID → {date, at, items}）
+function latestShares_(ss) {
+  var out = {};
+  rows_(ss, SHEETS.shares).forEach(function (r) {
+    var id = r['Slack ID'];
+    if (!id || (out[id] && out[id].date >= r['日付'])) return;
+    out[id] = { date: r['日付'], at: r['届いた時刻'], items: JSON.parse(r['要約'] || '[]') };
+  });
+  return out;
 }
 
 // 'yyyy-MM-dd' に日数を足す（暦の上の計算。時刻帯に左右されない）
@@ -647,9 +709,10 @@ var NOTION_VERSION = '2025-09-03';
 var ROLLUP_HOUR = 9; // 平日（祝日を除く）のこの時台に出す（時間主導のトリガーは時台の中のどこかで動く）
 var MOVING = ['進行中', '継続', '確認待ち']; // 今動いているタスク
 var STUCK = ['確認待ち', '保留']; // 詰まっていそうなタスク
-var ROLES = [['CC担当', 'CC'], ['PM担当', 'PM'], ['SP担当', 'SP']]; // 担当の数に入れる役割（リード・連携は入れない）
+var ROLES = [['CC担当', 'CC'], ['PM担当', 'PM'], ['SP担当', 'SP'], ['プロジェクトリード', 'リード'], ['連携メンバー', '連携']];
+var COUNTED = ['CC', 'PM', 'SP']; // 並行の数に入れる役割（リード・連携は社内案件・手伝いが多いので、別に出す）
 var LIST_MAX = 5;
-var ROLLUP_FOOTER = '一人ずつの詳細はスレッドに。出どころはMTD（Notion）で、MTDの外の仕事は入っていません。';
+var ROLLUP_FOOTER = '一人ずつの詳細はスレッドに。出どころはMTD（Notion）と、各自のミエタスクが送る案件ごとの要約です（タスクの題名・メールやDMの中身は入っていません）。';
 
 // ---------------------------------------------------------------- Notion
 
@@ -809,6 +872,15 @@ function md_(ymd) {
   return p.length === 3 ? Number(p[1]) + '/' + Number(p[2]) : '';
 }
 
+// 2か月より前・半年より先の日付は年も書く（「〜5/29」が去年か来年か分からなくなるため）
+function dateLabel_(ymd, today) {
+  if (!ymd) return '';
+  if (ymd < addDays_(today, -60) || ymd > addDays_(today, 180)) return Number(ymd.slice(0, 4)) + '/' + md_(ymd);
+  return md_(ymd);
+}
+
+function uniq_(arr) { return arr.filter(function (x, i) { return arr.indexOf(x) === i; }); }
+
 function capList_(items, sep) {
   if (items.length <= LIST_MAX) return items.join(sep);
   return items.slice(0, LIST_MAX).join(sep) + sep + '…他' + (items.length - LIST_MAX) + '件';
@@ -822,11 +894,17 @@ function memberState_(projects, tasks, today, titleOf) {
   var live = projects.filter(function (p) { return p.status !== '中止'; });
   var mine = {};
   live.forEach(function (p) { mine[p.id] = p; });
-  var running = live.filter(function (p) {
-    return p.start && p.start <= today && (p.end ? p.end >= today : !!p.first && p.first >= addDays_(today, -120));
-  }).sort(byEnd_);
-  var starting = live.filter(function (p) { return p.start > today && p.start <= addDays_(today, 60); }).sort(byStart_);
+  var isRun = function (p) {
+    return !!p.start && p.start <= today && (p.end ? p.end >= today : !!p.first && p.first >= addDays_(today, -120));
+  };
+  var counted = live.filter(function (p) { return p.roles.some(function (r) { return COUNTED.indexOf(r) >= 0; }); });
+  var running = counted.filter(isRun).sort(byEnd_);
+  var leading = live.filter(function (p) { return counted.indexOf(p) < 0 && isRun(p); }).sort(byEnd_);
+  var starting = counted.filter(function (p) { return p.start > today && p.start <= addDays_(today, 60); }).sort(byStart_);
   var ending = running.filter(function (p) { return p.end && p.end <= addDays_(today, 30); });
+  // 期間が過ぎた案件（タスクが閉じられずに残っていることが多い。今の仕事としては数えない）
+  var past = {};
+  live.forEach(function (p) { if (!isRun(p) && p.start && p.start <= today) past[p.id] = true; });
 
   var moving = {}, elsewhere = {}, outside = [], stuck = [];
   tasks.forEach(function (t) {
@@ -842,31 +920,54 @@ function memberState_(projects, tasks, today, titleOf) {
   });
 
   var history = {};
-  live.forEach(function (p) { if (p.kind) history[p.kind] = (history[p.kind] || 0) + 1; });
-  return { projects: live, running: running, starting: starting, ending: ending, moving: moving, elsewhere: elsewhere,
-    outside: outside, stuck: stuck, history: history, hasTasks: tasks.length > 0 };
+  counted.forEach(function (p) { if (p.kind) history[p.kind] = (history[p.kind] || 0) + 1; });
+  var others = outside.length + Object.keys(elsewhere).reduce(function (n, k) { return n + elsewhere[k].tasks.length; }, 0);
+  return { today: today, projects: live, running: running, leading: leading, starting: starting, ending: ending, past: past,
+    moving: moving, elsewhere: elsewhere, outside: uniq_(outside), others: others, stuck: stuck, history: history,
+    hasTasks: tasks.length > 0 };
 }
 
-// 一覧の1行と、スレッドの見出しに使う「並行の数と予定」。事実だけで、見立ては書かない
-function memberSummary_(st) {
-  if (!st.projects.length && !st.hasTasks) return 'MTDに担当案件もタスクもなく、ここからは見えない';
-  var parts = [];
-  parts.push(st.running.length ? st.running.length + '案件' : '今走っている案件なし');
+function mtdEmpty_(st) { return !st || (!st.projects.length && !st.hasTasks); }
+
+// MTD の分の「並行の数と予定」。事実だけで、見立ては書かない
+function mtdSummary_(st) {
+  if (mtdEmpty_(st)) return 'MTDに担当なし';
+  var parts = [st.running.length ? 'MTD ' + st.running.length + '案件' : 'MTDの担当案件なし'];
   if (st.ending.length) parts.push('うち' + st.ending.length + '件が' + md_(st.ending[st.ending.length - 1].end) + 'までに終了予定');
   if (st.starting.length) parts.push(st.starting.length + '件が始まる予定（最初は' + md_(st.starting[0].start) + '）');
+  if (st.leading.length) parts.push('リード・連携' + st.leading.length + '件');
+  if (!st.running.length && !st.leading.length && st.others) parts.push('担当外の案件・案件外で動いているタスクあり');
   return parts.join('、');
+}
+
+// ミエタスクの分。届いていなければそう書く（空いているとは書かない）
+function shareSummary_(sh, today) {
+  if (!sh) return '';
+  if (sh.date !== today) return 'ミエタスクは' + md_(sh.date) + 'から届いていない';
+  if (!sh.items.length) return 'ほかの案件なし（ミエタスク）';
+  var names = sh.items.map(function (i) { return i.name; });
+  return 'ほかに' + names.length + '案件（' + names.slice(0, 3).join('、') + (names.length > 3 ? ' ほか' : '') + '）';
+}
+
+// 一覧の1行と、スレッドの見出しに使う
+function memberLine_(st, sh, today, linked) {
+  var mtd = linked ? mtdSummary_(st) : 'MTDのひも付けなし（システム管理者が対応）';
+  var share = shareSummary_(sh, today);
+  if (linked && mtdEmpty_(st) && !share) return 'MTDに担当なし。ミエタスクの要約も届いておらず、ここからは見えない';
+  return [mtd, share].filter(String).join('／');
 }
 
 function stuckLabel_(s) { return (s.where ? s.where + '：' : '') + s.task + '[' + s.status + ']'; }
 
-function memberDetail_(m, st) {
-  var lines = ['■ *' + m.name + '* — ' + memberSummary_(st)];
+function mtdDetail_(st) {
+  if (mtdEmpty_(st)) return ['・担当なし'];
+  var lines = [];
   var shown = {};
-  var withTasks = st.projects.filter(function (p) { return st.moving[p.id]; }).sort(byEnd_);
+  var withTasks = st.projects.filter(function (p) { return st.moving[p.id] && !st.past[p.id]; }).sort(byEnd_);
   withTasks.forEach(function (p, i) {
     shown[p.id] = true;
     if (i >= LIST_MAX) return;
-    var when = p.end ? '〜' + md_(p.end) : p.start ? md_(p.start) + '〜' : '';
+    var when = p.end ? '〜' + dateLabel_(p.end, st.today) : p.start ? dateLabel_(p.start, st.today) + '〜' : '';
     var tag = [p.roles.join('・'), when].filter(String).join('・');
     lines.push('・' + p.name + (tag ? '（' + tag + '）' : '') + '　今: ' + capList_(st.moving[p.id], '、'));
   });
@@ -877,12 +978,39 @@ function memberDetail_(m, st) {
   if (start.length) lines.push('・もうすぐ始まる: ' + capList_(start.map(function (p) { shown[p.id] = true; return p.name + '（' + md_(p.start) + '〜）'; }), '、'));
   var rest = st.running.filter(function (p) { return !shown[p.id]; });
   if (rest.length) lines.push('・他に ' + capList_(rest.map(function (p) { return p.name; }), '、'));
+  var lead = st.leading.filter(function (p) { return !shown[p.id]; });
+  if (lead.length) lines.push('・リード・連携: ' + capList_(lead.map(function (p) { return p.name + '（' + p.roles.join('・') + '）'; }), '、'));
   var other = Object.keys(st.elsewhere).map(function (k) { return st.elsewhere[k]; });
-  if (other.length) lines.push('・担当外の案件: ' + capList_(other.map(function (o) { return o.name + '（' + capList_(o.tasks, '、') + '）'; }), ' / '));
+  if (other.length) lines.push('・担当外の案件: ' + capList_(other.map(function (o) { return o.name + '（' + o.tasks.length + '件）'; }), '、'));
   if (st.outside.length) lines.push('・案件外: ' + capList_(st.outside, '、'));
   if (st.stuck.length) lines.push('・詰まり: ' + capList_(st.stuck.map(stuckLabel_), '、'));
+  var stale = st.projects.filter(function (p) { return st.moving[p.id] && st.past[p.id]; }).sort(byEnd_);
+  if (stale.length) {
+    lines.push('・期間が過ぎてもタスクが動いている案件: ' + capList_(stale.map(function (p) {
+      return p.name + (p.end ? '（〜' + dateLabel_(p.end, st.today) + '）' : '');
+    }), '、'));
+  }
   var kinds = Object.keys(st.history).sort(function (a, b) { return st.history[b] - st.history[a]; });
   if (kinds.length) lines.push('・これまでの担当（MTD・終了分を含む）：' + kinds.map(function (k) { return k + ' ' + st.history[k]; }).join('・'));
+  return lines;
+}
+
+function shareItemLine_(it, today) {
+  return '・' + it.name + ' — ' + it.state + (it.due ? '（次の期限 ' + dateLabel_(it.due, today) + '）' : '');
+}
+
+function shareDetail_(sh, today) {
+  if (sh.date !== today) return ['*ミエタスクから*', '・' + md_(sh.date) + 'から届いていない（毎朝の実行が止まっているかもしれない）'];
+  var at = String(sh.at || '').slice(11, 16);
+  var head = '*ミエタスクから*（' + md_(sh.date) + (at ? ' ' + at.replace(/^0/, '') : '') + '時点）';
+  if (!sh.items.length) return [head, '・MTDのほかの案件なし'];
+  return [head].concat(sh.items.map(function (it) { return shareItemLine_(it, today); }));
+}
+
+function memberDetail_(m, st, sh, today, linked) {
+  var lines = ['■ *' + m.name + '* — ' + memberLine_(st, sh, today, linked)];
+  if (linked) lines = lines.concat(['*MTDから*'], mtdDetail_(st));
+  if (sh) lines = lines.concat(shareDetail_(sh, today));
   return fit_(lines);
 }
 
@@ -905,17 +1033,16 @@ function teamMembers_(ss, team) {
 // チーム1つぶんの投稿（親1本＋1人1スレッド）を作る
 function buildRollup_(ss, team, today, reader) {
   var members = teamMembers_(ss, team);
+  var shares = latestShares_(ss);
   var lines = [], replies = [];
   members.forEach(function (m) {
-    if (!nid_(m.notion_user)) {
-      lines.push('• *' + m.name + '*　MTDとのひも付けが台帳に無く、ここからは見えない（システム管理者が対応）');
-      return;
-    }
-    var st = memberState_(reader.projects(m.notion_user), reader.tasks(m.notion_user), today, reader.title);
-    var line = '• *' + m.name + '*　' + memberSummary_(st);
-    if (st.stuck.length) line += '　:warning: ' + stuckLabel_(st.stuck[0]) + (st.stuck.length > 1 ? ' ほか' + (st.stuck.length - 1) + '件' : '');
+    var linked = !!nid_(m.notion_user);
+    var st = linked ? memberState_(reader.projects(m.notion_user), reader.tasks(m.notion_user), today, reader.title) : null;
+    var sh = shares[m.slack_id] || null;
+    var line = '• *' + m.name + '*　' + memberLine_(st, sh, today, linked);
+    if (st && st.stuck.length) line += '　:warning: ' + stuckLabel_(st.stuck[0]) + (st.stuck.length > 1 ? ' ほか' + (st.stuck.length - 1) + '件' : '');
     lines.push(line);
-    if (st.projects.length || st.hasTasks) replies.push(memberDetail_(m, st));
+    if (!mtdEmpty_(st) || sh) replies.push(memberDetail_(m, st, sh, today, linked));
   });
   var head = ':busts_in_silhouette: *' + (team.name || team.id) + 'の状況*　' + md_(today) + '時点';
   var parent = fit_([head, ''].concat(lines.length ? lines : ['対象のメンバーがいません'], ['', ROLLUP_FOOTER]));
