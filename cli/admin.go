@@ -1,11 +1,9 @@
 package main
 
-// 管理者が使うコマンド。チームの追加、管理者の交代、退職者の片付け、導入状況の確認。
-// 台帳（スプレッドシート）を書き換えたあとに、Slack 側の作業をここで済ませる。
+// 管理者が使うコマンド。退職者の片付け、導入状況の確認、鍵づくり。
+// チームと管理者は台帳（スプレッドシート）だけで決まる（Slack 側の作業は要らない）。
 //
 //	mietask admin status [--team pm]               メンバーごとの状態と、最後に動いた日時
-//	mietask admin create-team --id pm1             まとめチャンネルを作り、管理者を招待する
-//	mietask admin invite-managers --id pm1         管理者を替えたあと、新しい管理者を招待する
 //	mietask admin archive-member --slack U0...     停止にした人の投稿先をアーカイブする
 //	mietask admin make-key --slack-token-file F --registry-url U --registry-key-prompt
 //	                                               ミエタスクの鍵を作ってクリップボードに入れる（合言葉は入力欄で受け取る）
@@ -26,15 +24,11 @@ func runAdmin(rest []string) error {
 		return err
 	}
 	if len(a.pos) == 0 {
-		return errors.New("admin のあとに status / create-team / invite-managers / archive-member / make-key のどれかが要ります。")
+		return errors.New("admin のあとに status / archive-member / make-key のどれかが要ります。")
 	}
 	switch a.pos[0] {
 	case "status":
 		return adminStatus(a.get("team"))
-	case "create-team":
-		return adminCreateTeam(a.get("id"), a.get("channel-name"), a.flags["dry-run"])
-	case "invite-managers":
-		return adminInviteManagers(a.get("id"), a.flags["dry-run"])
 	case "archive-member":
 		return adminArchiveMember(a.get("slack"), a.flags["dry-run"])
 	case "make-key":
@@ -107,81 +101,6 @@ func adminStatus(teamID string) error {
 	return nil
 }
 
-func adminCreateTeam(id, chName string, dry bool) error {
-	if id == "" {
-		return errors.New("--id（台帳のチームID）が要ります。")
-	}
-	reg, err := mustRegistry()
-	if err != nil {
-		return err
-	}
-	t := reg.team(id)
-	if t == nil {
-		return fmt.Errorf("チーム %s が台帳にありません。先にスプレッドシートの「チーム」に行を足してください", id)
-	}
-	if t.Channel != "" {
-		return fmt.Errorf("チーム %s にはすでにまとめチャンネル（%s）があります", t.ID, t.Channel)
-	}
-	if chName == "" {
-		chName = "ミエタスク-" + strings.ToLower(t.ID)
-	}
-	if dry {
-		fmt.Printf("[dry-run] #%s を作り、管理者 %s を招待します\n", chName, strings.Join(t.Managers, ", "))
-		return nil
-	}
-	token, err := readToken("")
-	if err != nil {
-		return err
-	}
-	chID, nm, err := createPrivateChannel(token, chName)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("作りました: #%s\n", nm)
-	for _, m := range t.Managers {
-		msg, err := ensureMemberIn(token, chID, strings.TrimSpace(m))
-		if err != nil {
-			fmt.Printf("  %s: 招待できませんでした（%s）\n", m, err)
-			continue
-		}
-		fmt.Printf("  %s: %s\n", m, msg)
-	}
-	fmt.Printf("channel: %s\n", chID)
-	fmt.Printf("→ スプレッドシートの「チーム」の %s の行の「まとめチャンネル」に %s を入れてください\n", t.ID, chID)
-	return nil
-}
-
-func adminInviteManagers(id string, dry bool) error {
-	reg, err := mustRegistry()
-	if err != nil {
-		return err
-	}
-	t := reg.team(id)
-	if t == nil || t.Channel == "" {
-		return fmt.Errorf("チーム %s か、そのまとめチャンネルが台帳にありません", id)
-	}
-	if dry {
-		fmt.Printf("[dry-run] %s に %s を招待します\n", t.Channel, strings.Join(t.Managers, ", "))
-		return nil
-	}
-	token, err := readToken("")
-	if err != nil {
-		return err
-	}
-	for _, m := range t.Managers {
-		msg, err := ensureMemberIn(token, t.Channel, strings.TrimSpace(m))
-		if err != nil {
-			fmt.Printf("  %s: 招待できませんでした（%s）\n", m, err)
-			continue
-		}
-		fmt.Printf("  %s: %s\n", m, msg)
-	}
-	fmt.Println("※ 前の管理者をチャンネルから外す操作は、Slack の画面から行ってください（Bot は人を外せません）")
-	return nil
-}
-
-// adminArchiveMember は停止にした人の投稿先をアーカイブする。
-// 取り違えを防ぐため、台帳で「停止」になっている人しか対象にしない。
 func adminArchiveMember(slackID string, dry bool) error {
 	if slackID == "" {
 		return errors.New("--slack（その人のSlack ID）が要ります。")

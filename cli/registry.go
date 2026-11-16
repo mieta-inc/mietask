@@ -487,11 +487,7 @@ func doctorRegistry(ok, ng, warn func(string, string)) {
 		var names []string
 		for _, tid := range m.Teams {
 			if t := reg.team(strings.TrimSpace(tid)); t != nil {
-				label := t.ID
-				if t.Channel == "" {
-					label += "（まとめチャンネル未設定）"
-				}
-				names = append(names, label)
+				names = append(names, t.ID)
 			} else {
 				names = append(names, tid+"（台帳にないチーム）")
 			}

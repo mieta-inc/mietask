@@ -5,7 +5,7 @@
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
 //	mietask post ...                                          Slackへ投稿（自分のチャンネルだけ。点検用に件数を送る）
-//	mietask share ...                                         管理者向けの案件ごとの要約を窓口に送る
+//	mietask share ...                                         管理者向けの案件ごとの要約を窓口に送る（hints で案件名の手がかり）
 //	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
 //	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
 //	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
@@ -93,6 +93,8 @@ func usage() {
                                       （点検用に件数だけを送る。--no-team で送らない）
                                       （--share で管理者向けの案件ごとの要約も出して送る）
   share --file FILE                   管理者向けの案件ごとの要約だけを送り直す
+  share hints                         案件の名前の手がかり（自分の MTD の案件名・同じチームの人が使った案件名）
+
   channel --name NAME                 投稿先のプライベートチャンネルを作る
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
@@ -100,7 +102,7 @@ func usage() {
   delete --ts TS                      Botの投稿を消す
   paths home|tmp                      データの置き場所を出す
   setup --slack-id U --email E --name N   設定・台帳・投稿先チャンネルをまとめて用意する
-  admin status|create-team|invite-managers|archive-member|make-key   管理者用
+  admin status|archive-member|make-key   管理者用
   doctor                              設定・トークン・接続を点検する
   version                             バージョンを出す
 
@@ -128,6 +130,10 @@ func run(argv []string) int {
 			err = runPost(a)
 		}
 	case "share":
+		if len(rest) > 0 && rest[0] == "hints" {
+			err = cmdShareHints()
+			break
+		}
 		var a *args
 		if a, err = parseArgs(rest); err == nil {
 			err = cmdShare(a.get("file"), a.flags["dry-run"])

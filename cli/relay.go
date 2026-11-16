@@ -4,7 +4,7 @@ package main
 //
 // メンバーが持つのは一人ずつ別の鍵（mietask2.…）だけで、Botトークンは持たない。
 // 投稿・投稿先の用意・診断・管理者の画面のデータは、すべて窓口に頼む。窓口は鍵を確かめ、
-// 本人の投稿先と所属チームのまとめチャンネルにしか投稿させない。台帳で停止にされた人や、
+// 本人の投稿先にしか投稿させない。台帳で停止にされた人や、
 // 鍵を無効にされた人は、その時点から窓口を使えなくなる。
 
 import (
@@ -235,8 +235,6 @@ func relayDoctor(k *relayKey, ok, ng, warn func(string, string)) {
 		switch {
 		case t.Missing:
 			names = append(names, t.ID+"（台帳にないチーム）")
-		case t.Channel == "":
-			names = append(names, t.ID+"（まとめチャンネル未設定）")
 		default:
 			names = append(names, t.ID)
 		}
