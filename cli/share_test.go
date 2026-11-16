@@ -45,14 +45,14 @@ func TestLoadShareRejectsLeakyOrMalformed(t *testing.T) {
 			t.Errorf("%s: 受け付けてしまった", name)
 		}
 	}
-	many := make([]string, 21)
+	many := make([]string, 41)
 	for i := range many {
 		many[i] = `{"name":"案件","state":"動いている"}`
 	}
 	p := filepath.Join(dir, "many.json")
 	write(t, p, `{"items":[`+strings.Join(many, ",")+`]}`)
 	if _, err := loadShare(p); err == nil {
-		t.Error("21件を受け付けてしまった")
+		t.Error("41件を受け付けてしまった")
 	}
 	write(t, p, `{"items":[]}`)
 	if items, err := loadShare(p); err != nil || len(items) != 0 {
@@ -78,7 +78,7 @@ func TestPostWithShare(t *testing.T) {
 		t.Fatalf("投稿されていない: %s", out)
 	}
 	rs := f.posts[0]["replies"].([]any)
-	want := ":eyes: *管理者に届く内容*（管理者のページに、案件ごとの状態と一言が出ます。タスクの題名・メールやDMの中身は届きません）\n" +
+	want := ":eyes: *管理者に届く内容*（管理者のページに、持っている案件と、それぞれのいまの状態の一言が出ます。タスクの題名・メールやDMの中身は届きません）\n" +
 		"• ミエマス（ポータル・MTD） — 動いている・残り4件（うち超過1件）（次の期限 11/20）：管理画面の作り直し\n• 社内DX — 相手待ち・残り0件"
 	if len(rs) != 2 || rs[0] != "子1" || rs[1] != want {
 		t.Errorf("子スレッドの最後に管理者に届く内容が出ていない: %q", rs)
