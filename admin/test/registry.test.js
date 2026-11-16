@@ -701,7 +701,7 @@ test('ダッシュボード：メンバーは自分の分だけ。案件を出�
     ['リードだけの案件', 2, 'リード', '', '〜3/31'],
     ['都立大崎', 2, 'SP', '', '10/1〜'],
     ['他人の案件', 3, '担当外', 'タスク1件', ''],
-    ['1月開始WS', 4, 'CC', '1/10開始', ''],
+    ['1月開始WS', 5, 'CC', '1/10開始', ''],
   ]);
   // 中止・終わった・期間が過ぎた案件と、タスクの題名は返さない
   const text = JSON.stringify(v);
@@ -858,7 +858,9 @@ test('案件の要約：決まった形だけを受け取り、ダッシュボ�
     [{ name: '改行\nあり', state: '動いている' }],
     [{ name: 'ミエマス', state: '忙しい' }],
     [{ name: 'ミエマス', state: '動いている', due: '11/20' }],
-    Array.from({ length: 21 }, (_, i) => ({ name: '案件' + i, state: '動いている' })),
+    Array.from({ length: 41 }, (_, i) => ({ name: '案件' + i, state: '動いている' })),
+    [{ name: 'ミエマス', state: '動いている', role: '<@U1>' }],
+    [{ name: 'ミエマス', state: '動いている', last_seen: '11/1' }],
     [{ name: 'ミエマス', state: '動いている', open: -1 }],
     [{ name: 'ミエマス', state: '動いている', open: 1.5 }],
     [{ name: 'ミエマス', state: '動いている', open: 1000 }],
@@ -889,16 +891,16 @@ test('案件の要約：決まった形だけを受け取り、ダッシュボ�
     ['26順天高1ゼミ', 1, 'CC', '確認待ちのタスクあり', '〜3/31'],
     ['社内DX', 1, '', '相手待ち', ''],
     ['26広島学院 高1 FW', 2, 'CC', '', '〜11/20'],
-    ['ミエマス（ポータル・MTD）', 2, '', '動いている', '期限11/20'],
+    ['ミエマス（ポータル・MTD）', 2, '', '動いている', '次の期限11/20'],
     ['大阪国際WS', 2, 'PM', '', '〜12/4'],
     ['リードだけの案件', 2, 'リード', '', '〜3/31'],
     ['採用', 2, '', '動いている', ''],
     ['都立大崎', 2, 'SP', '', '10/1〜'],
     ['他人の案件', 3, '担当外', 'タスク1件', ''],
-    ['1月開始WS', 4, 'CC', '1/10開始', ''],
+    ['1月開始WS', 5, 'CC', '1/10開始', ''],
   ]);
-  assert.deepStrictEqual(cardOf(v, 'U4'), { slack_id: 'U4', name: 'MTDに無い人', teams: ['pd'], team_names: ['PD'], notes: 'ミエタスクは11/13から未着', share_at: '',
-    items: [], now: 0, later: 0, overdue: [], waiting: [] });
+  assert.deepStrictEqual(cardOf(v, 'U4'), { slack_id: 'U4', name: 'MTDに無い人', teams: ['pd'], team_names: ['PD'], notes: 'ミエタスクは11/13から未着', share_at: '2026-11-13T07:00:00+09:00',
+    items: [], now: 0, later: 0, idle: 0, overdue: [], waiting: [] });
 
 
   // 管理者の画面（team-sheet）にも、担当チームの人の要約が返る
@@ -1006,7 +1008,7 @@ test('ダッシュボードのページ：見る人でタブが変わる。メ�
   assert.deepStrictEqual(mem.sent.map(s => [s.url, s.body]), [['https://relay.example/exec',
     { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', view: '', change: null, page_url: 'https://dash.example/exec' }]]);
   assert.deepStrictEqual(tabsOf(h), ['自分', '案件']);
-  assert.ok(h.includes('<h3>別チーム</h3>') && h.includes('26順天高1ゼミ') && h.includes('PD・今 7件・これから 1件') && h.includes('相手待ち 1'), h);
+  assert.ok(h.includes('<h3>別チーム</h3>') && h.includes('26順天高1ゼミ') && h.includes('PD・持っている案件 7件・これから 1件') && h.includes('相手待ち 1'), h);
   assert.ok(!h.includes('<img src=x') && h.includes('&lt;img src=x onerror=alert(1)&gt;案件'), '案件名を escape していない');
   assert.ok(!/段 部長|山田 太郎|data-tab="admin"|メンバーを足す/.test(h));
   // ページの URL を窓口が覚える（鍵や案内の DM に書く）
@@ -1218,7 +1220,7 @@ test('案件のタブ：MTD とミエタスクを案件ごとに束ね、関わ�
     members: [{ name: '別チーム', role: 'PM' }, { name: 'MTDに無い人', role: 'CC' }, { name: 'ひも付けなし', role: 'ミエタスク' }],
     others: 1 }); // 台帳にいない連携メンバー
   const later = v.projects.find(p => p.name === '1月開始WS');
-  assert.deepStrictEqual([later.rank, later.progress.label], [4, '1/10開始']);
+  assert.deepStrictEqual([later.rank, later.progress.label], [5, '1/10開始']);
   assert.strictEqual(v.projects.find(p => p.name === '他人の案件').members[0].role, '担当外');
   assert.ok(!names.includes('名前を読めない案件'));
 
@@ -1271,7 +1273,7 @@ test('案件の要約：残りと超過の件数を受け取り、メンバー�
   const row = n => rowsOf(c).find(r => r[0] === n);
   assert.deepStrictEqual(row('社内DX'), ['社内DX', 0, '', '期限が過ぎたものあり', '残り5件（うち超過2件）']);
   // MTD の案件と同じ名前なら1行にする（役割と期間は MTD、状態と件数はミエタスクから）
-  assert.deepStrictEqual(row('渋谷区WS'), ['渋谷区WS', 1, 'PM', '相手待ち', '残り3件・期限11/20・〜12/31']);
+  assert.deepStrictEqual(row('渋谷区WS'), ['渋谷区WS', 1, 'PM', '相手待ち', '残り3件・次の期限11/20・〜12/31']);
   assert.ok(!row('渋谷区ＷＳ'));
   assert.ok(call(env, { id: k.U2.i, k: k.U2.k, action: 'share', items: [{ name: '社内DX', state: '動いている' }] }).ok);
   const saved = env.ss.getSheetByName('案件の要約').cells.find(r => r[1] === 'U2');
@@ -1324,7 +1326,7 @@ test('案件のページ：人の並びに一言と件数を出し、案件の�
   assert.ok(people.indexOf('<h3>別チーム</h3>') < people.indexOf('<h3>ひも付けなし</h3>'), '気にすべきものがある人から並んでいない');
   assert.ok(people.includes('<span class="flag f0">期限超過 1</span>') && people.includes('残り5件（うち超過2件）'), people);
   const projects = h.match(/<section role="tabpanel" id="projects"[^>]*>([\s\S]*?)<\/section>/)[1];
-  assert.ok(projects.includes('<span class="dot d1"></span>渋谷区WS') && projects.includes('別チーム<span class="role">PM</span>') &&
+  assert.ok(projects.includes('<span class="dot d1"></span><span class="pn">渋谷区WS</span>') && projects.includes('別チーム<span class="role">PM</span>') &&
     projects.includes('ほかに1人') && projects.includes('残り7件（うち超過2件）') && projects.includes('次の期限 11/20・残り3件・期間の5割・残り6週'), projects);
   assert.ok(h.includes('&lt;b&gt;太字&lt;/b&gt;の案件') && !h.includes('<b>太字'), '案件名を escape していない');
   assert.ok(!h.includes('PM1だけの案件'));
@@ -1417,4 +1419,28 @@ test('案件の要約：一言を受け取って人の並びに出す。長い�
   assert.ok(call(env, { id: k.i, k: k.k, action: 'share', items: [{ name: '社内DX', state: '相手待ち', note: ' 経費精算の流れの見直し。先方の確認待ち ', open: 2 }] }).ok);
   const c = dash(env, 'nomtd@example.com').self;
   assert.deepStrictEqual(rowsOf(c), [['社内DX', 1, '', '経費精算の流れの見直し。先方の確認待ち', '残り2件']]);
+});
+
+test('持ち案件：関わり方・最後に動いた日・しばらく動きなしを受け取り、届いてから1週間は人の並びに出す', () => {
+  const env = load();
+  seedDash(env);
+  const k = issue(env, 7); // U4（MTD に案件なし）
+  assert.ok(call(env, { id: k.i, k: k.k, action: 'share', items: [
+    { name: '社内DX', state: '動いている', role: 'リード', note: '経費精算の流れの見直し', last_seen: '2026-11-16' },
+    { name: '採用広報', state: 'しばらく動きなし', role: '手伝い', note: '記事の公開待ち', last_seen: '2026-10-20' },
+  ] }).ok);
+  const rows = () => rowsOf(dash(env, 'nomtd@example.com').self);
+  assert.deepStrictEqual(rows(), [
+    ['社内DX', 2, 'リード', '経費精算の流れの見直し', ''],
+    ['採用広報', 4, '手伝い', '記事の公開待ち', '最後に動いた 10/20'],
+  ]);
+  const c = dash(env, 'nomtd@example.com').self;
+  assert.deepStrictEqual([c.now, c.idle], [2, 1]);
+  // 案件の並びでも、本人が書いた関わり方で出す
+  assert.deepStrictEqual(dash(env, 'exec@example.com').projects.find(p => p.name === '社内DX').members, [{ name: 'MTDに無い人', role: 'リード' }]);
+  // 朝の実行が抜けても、1週間は前の一覧を出す（持ち案件は日ごとに変わるものではないため）。それより古ければ出さない
+  env.clock.today = '2026-11-23';
+  assert.strictEqual(rows().length, 2);
+  env.clock.today = '2026-11-24';
+  assert.strictEqual(rows().length, 0);
 });

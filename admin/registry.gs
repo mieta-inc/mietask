@@ -439,8 +439,9 @@ function upsertDaily_(ctx, def, date, fields, at) {
 
 // ---------------------------------------------------------------- 案件の要約（ミエタスクから）
 
-var SHARE_STATES = ['動いている', '相手待ち', '期限が過ぎたものあり'];
-var SHARE_MAX = 20;
+var SHARE_STATES = ['動いている', '相手待ち', '期限が過ぎたものあり', 'しばらく動きなし'];
+var SHARE_MAX = 40; // 持ち案件の一覧（横断の仕事の多い人は数が多い）
+var SHARE_FRESH_DAYS = 7; // 持ち案件の一覧は、この日数のあいだは最新として出す（朝の実行が1日抜けても消さない）
 var HINT_MAX = 80;
 var NOTE_MAX = 40; // 案件ごとの「いま何をしているか」の一言
 
@@ -467,6 +468,12 @@ function cleanShare_(raw) {
     var due = String(it.due || '');
     if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) throw relayError_('bad_share', where + ' の期限は yyyy-MM-dd です');
     var out = { name: name, state: state, due: due };
+    var role = String(it.role || '').trim();
+    if (role.length > 12 || /[\r\n<>@]|https?:/i.test(role)) throw relayError_('bad_share', where + ' の関わり方は12文字までで、改行・リンク・メンションは入れられません');
+    if (role) out.role = role;
+    var last = String(it.last_seen || '');
+    if (last && !/^\d{4}-\d{2}-\d{2}$/.test(last)) throw relayError_('bad_share', where + ' の最後に動いた日は yyyy-MM-dd です');
+    if (last) out.last_seen = last;
     var note = String(it.note || '').trim();
     if (note.length > NOTE_MAX) throw relayError_('bad_share', where + ' の一言が長すぎます（' + NOTE_MAX + '文字まで）');
     if (/[\r\n<>@]|https?:/i.test(note)) throw relayError_('bad_share', where + ' の一言に改行・リンク・メンション・メールアドレスは入れられません');
@@ -1049,8 +1056,12 @@ function memberState_(projects, tasks, today, titleOf) {
 
 // 1人ぶんの案件の並び（personItems_）。rank の小さい順（気にすべきもの → 動いているもの → 担当外 → これから始まるもの）、
 // 同じ rank は期限・終了日の近い順。
-var RANK = { overdue: 0, waiting: 1, running: 2, helping: 3, starting: 4 };
-var SHARE_WORD = ['期限が過ぎたものあり', '相手待ち', '動いている'];
+var RANK = { overdue: 0, waiting: 1, running: 2, helping: 3, idle: 4, starting: 5 };
+var SHARE_WORD = ['期限が過ぎたものあり', '相手待ち', '動いている', '', 'しばらく動きなし'];
+var SHARE_RANK = { '期限が過ぎたものあり': RANK.overdue, '相手待ち': RANK.waiting, '動いている': RANK.running, 'しばらく動きなし': RANK.idle };
+
+// 持ち案件の一覧として使えるか（届いてから SHARE_FRESH_DAYS 日まで）
+function freshShare_(sh, today) { return !!sh && sh.date >= addDays_(today, -SHARE_FRESH_DAYS); }
 
 function periodLabel_(p, today) {
   return p.end ? '〜' + dateLabel_(p.end, today) : p.start ? dateLabel_(p.start, today) + '〜' : '';
@@ -1139,11 +1150,12 @@ function memberEntries_(st, sh, today) {
         note: unreadable + '件（Notion のインテグレーションが接続されていない）', unreadable: true });
     }
   }
-  if (sh && sh.date === today) {
+  if (freshShare_(sh, today)) {
     sh.items.forEach(function (it) {
-      var rank = it.state === '期限が過ぎたものあり' ? RANK.overdue : it.state === '相手待ち' ? RANK.waiting : RANK.running;
-      out.push({ name: it.name, src: 'share', rank: rank, due: it.due || '', roles: [], start: '', end: '',
-        open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [], note: it.note || '' });
+      var rank = it.state in SHARE_RANK ? SHARE_RANK[it.state] : RANK.running;
+      out.push({ name: it.name, src: 'share', rank: rank, due: it.due || '', roles: it.role ? [it.role] : [], start: '', end: '',
+        open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [], note: it.note || '',
+        last_seen: it.last_seen || '' });
     });
   }
   return out;
@@ -1163,7 +1175,9 @@ function personItems_(entries, resolve, today) {
     var g = groups[k], list = g.list;
     var rank = Math.min.apply(null, list.map(function (e) { return e.rank; }));
     var mtd = list.filter(function (e) { return e.src === 'mtd'; }), sh = list.filter(function (e) { return e.src === 'share'; });
-    var roles = uniq_([].concat.apply([], mtd.map(function (e) { return e.roles; })));
+    // 役割は MTD のもの。MTD に無い案件は、本人の持ち案件の一覧に書いた関わり方
+    var roles = uniq_([].concat.apply([], (mtd.length ? mtd : sh).map(function (e) { return e.roles; })));
+    var last = sh.map(function (e) { return e.last_seen; }).filter(String).sort().reverse()[0] || '';
     var note = sh.map(function (e) { return e.note; }).filter(String)[0] || mtd.map(function (e) { return e.note; }).filter(String)[0] || '';
     if (!note && sh.length) note = SHARE_WORD[Math.min.apply(null, sh.map(function (e) { return e.rank; }))] || '';
     var dues = list.map(function (e) { return e.due; }).filter(String).sort();
@@ -1172,8 +1186,8 @@ function personItems_(entries, resolve, today) {
     var counted = sh.filter(function (e) { return e.open !== null && e.open !== undefined; });
     var count = counted.length ? countLabel_(counted.reduce(function (n, e) { return n + e.open; }, 0),
       counted.reduce(function (n, e) { return n + (e.overdue || 0); }, 0)) : '';
-    var meta = [count, dues[0] ? '期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '']
-      .filter(String).join('・');
+    var meta = [count, dues[0] ? '次の期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '',
+      last && last < today ? '最後に動いた ' + dateLabel_(last, today) : ''].filter(String).join('・');
     return { name: g.name, rank: rank, role: roles.join('・'), src: g.mtd && g.share ? 'both' : g.mtd ? 'mtd' : 'share',
       note: note, meta: meta, start: start, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
   });
@@ -1199,6 +1213,8 @@ function personCard_(base, entries, resolve, today) {
     items: items.map(function (it) { return { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta }; }),
     now: items.filter(function (it) { return it.rank !== RANK.starting; }).length,
     later: items.filter(function (it) { return it.rank === RANK.starting; }).length,
+    idle: items.filter(function (it) { return it.rank === RANK.idle; }).length,
+
     overdue: pick(function (it) { return it.rank === RANK.overdue; }),
     waiting: pick(function (it) { return it.rank === RANK.waiting; }),
   };
@@ -1225,6 +1241,8 @@ function progress_(start, end, today) {
 }
 
 var ROLE_ORDER = ['PM', 'CC', 'SP', 'リード', '連携', '担当外', 'ミエタスク'];
+// 本人が書いた関わり方（「担当」「手伝い」など）は、MTD の役割のあと・担当外の前に並べる
+function roleRank_(r) { var i = ROLE_ORDER.indexOf(r); return i < 0 ? ROLE_ORDER.indexOf('連携') + 0.5 : i; }
 
 // 見える人の関わりを案件ごとに束ねる。others は、見えない人のうちその案件に関わっている人の数（名前は出さない）。
 //   seen: [{member, entries}]（見える人） / hidden: [{member, entries}]（見えない人。MTD の役割の欄と今日の要約から分かる分）
@@ -1244,7 +1262,7 @@ function projectsView_(seen, hidden, resolve, byNotion, today) {
       if (!g.fixed && e.src === 'mtd' && !g.mtd) { g.name = e.name; g.mtd = true; }
       g.entries.push(e);
       var w = g.who[s.member.slack_id] = g.who[s.member.slack_id] || { name: s.member.name, roles: [] };
-      w.roles = uniq_(w.roles.concat(e.src === 'share' ? ['ミエタスク'] : e.roles));
+      w.roles = uniq_(w.roles.concat(e.src === 'share' ? (e.roles.length ? e.roles : ['ミエタスク']) : e.roles));
       (e.people || []).forEach(function (p) { g.people[p] = true; });
     });
   });
@@ -1270,8 +1288,8 @@ function projectsView_(seen, hidden, resolve, byNotion, today) {
     var members = Object.keys(g.who).map(function (id) {
       var w = g.who[id];
       var roles = w.roles.length > 1 ? w.roles.filter(function (r) { return r !== 'ミエタスク'; }) : w.roles;
-      roles.sort(function (a, b) { return ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b); });
-      return { name: w.name, role: roles.join('・'), top: ROLE_ORDER.indexOf(roles[0]) };
+      roles.sort(function (a, b) { return roleRank_(a) - roleRank_(b); });
+      return { name: w.name, role: roles.join('・'), top: roleRank_(roles[0]) };
     }).sort(function (a, b) { return a.top - b.top; }).map(function (m) { return { name: m.name, role: m.role }; });
     return {
       name: g.name, rank: rank, due: dues[0] || '', due_label: dues[0] ? dateLabel_(dues[0], today) : '',
@@ -1387,7 +1405,7 @@ function card_(ctx, m) {
   }
   var sh = ctx.shares[m.slack_id] || null;
   var c = { slack_id: m.slack_id, name: m.name, teams: m.teams, notes: memberNotes_(sh, ctx.today, linked),
-    share_at: sh && sh.date === ctx.today ? sh.at : '' };
+    share_at: freshShare_(sh, ctx.today) ? sh.at : '' };
   var entries = memberEntries_(st, sh, ctx.today);
   if (mtdOk) cache.put(key, JSON.stringify({ card: c, entries: entries }), DASH_CACHE_SEC);
   ctx.entries[m.slack_id] = entries;

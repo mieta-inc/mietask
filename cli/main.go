@@ -5,13 +5,15 @@
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
 //	mietask post ...                                          Slackへ投稿（自分のチャンネルだけ。点検用に件数を送る）
-//	mietask share ...                                         管理者向けの案件ごとの要約を窓口に送る（hints で案件名の手がかり）
-//	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
-//	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
-//	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
-//	mietask paths home|tmp                                    データの置き場所
-//	mietask doctor                                            設定・トークン・接続を点検する
-//	mietask version
+//	mietask projects list|update|remove                       持ち案件の台帳（管理者に送るのはこの一覧）
+//	mietask share ...                                         管理者向けの一覧を窓口に送る（hints で案件名の手がかり）
+
+// mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
+// mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
+// mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
+// mietask paths home|tmp                                    データの置き場所
+// mietask doctor                                            設定・トークン・接続を点検する
+// mietask version
 package main
 
 import (
@@ -89,10 +91,14 @@ func usage() {
   sync upsert --findings FILE         巡回結果を台帳に登録する
   sync status ID... --status S        タスクの status を変える
   sync record --ts TS                 投稿したスレッドの ts を控える
-  post --payload FILE [--share FILE]  自分のチャンネルへ親＋子スレッドを投稿する
+  post --payload FILE [--projects]    自分のチャンネルへ親＋子スレッドを投稿する
                                       （点検用に件数だけを送る。--no-team で送らない）
-                                      （--share で管理者向けの案件ごとの要約も出して送る）
-  share --file FILE                   管理者向けの案件ごとの要約だけを送り直す
+                                      （--projects で持っている案件の一覧も出して管理者向けに送る）
+  projects list                       持っている案件の一覧（3週間動きなしで目印、6週間で外れる）
+  projects update --file FILE         その日に動いた案件・足す案件・外す案件を台帳に入れる
+  projects remove NAME                案件を一覧から外す
+  share --projects                    持っている案件の一覧だけを管理者向けに送り直す
+  share --file FILE                   （古い形）案件ごとの要約だけを送り直す
   share hints                         案件の名前の手がかり（自分の MTD の案件名・同じチームの人が使った案件名）
 
   channel --name NAME                 投稿先のプライベートチャンネルを作る
@@ -126,17 +132,23 @@ func run(argv []string) int {
 		code, err = runSync(rest)
 	case "post":
 		var a *args
-		if a, err = parseArgs(rest, "no-team"); err == nil {
+		if a, err = parseArgs(rest, "no-team", "projects"); err == nil {
 			err = runPost(a)
 		}
+	case "projects":
+		err = runProjects(rest)
 	case "share":
 		if len(rest) > 0 && rest[0] == "hints" {
 			err = cmdShareHints()
 			break
 		}
 		var a *args
-		if a, err = parseArgs(rest); err == nil {
-			err = cmdShare(a.get("file"), a.flags["dry-run"])
+		if a, err = parseArgs(rest, "projects"); err == nil {
+			if a.flags["projects"] {
+				err = cmdShareProjects(a.flags["dry-run"])
+			} else {
+				err = cmdShare(a.get("file"), a.flags["dry-run"])
+			}
 		}
 	case "channel":
 		var a *args
@@ -221,14 +233,25 @@ func runPost(a *args) error {
 	dry := a.flags["dry-run"]
 	payload := a.get("payload")
 	sharePath := a.get("share")
+	withProjects := a.flags["projects"]
 	var share []shareItem
 	postPath := payload
-	if sharePath != "" {
+	if withProjects && sharePath != "" {
+		return errors.New("--projects と --share は一緒には使えません。")
+	}
+	if sharePath != "" || withProjects {
 		if a.get("channel") != "" {
-			return errors.New("--share は自分のチャンネルへの投稿でだけ使えます（--channel と一緒には使えません）。")
+			return errors.New("--share・--projects は自分のチャンネルへの投稿でだけ使えます（--channel と一緒には使えません）。")
 		}
 		var err error
-		if share, err = loadShare(sharePath); err != nil {
+		if withProjects {
+			// 持ち案件の台帳から作る（6週間動きの無い案件はここで外れる）
+			b, err := loadAgedBook()
+			if err != nil {
+				return err
+			}
+			share = projectShareItems(b)
+		} else if share, err = loadShare(sharePath); err != nil {
 			return err
 		}
 		if postPath, err = withSharePreview(payload, share); err != nil {
@@ -249,6 +272,11 @@ func runPost(a *args) error {
 			fmt.Fprintf(os.Stderr, "警告: 管理者向けの要約を送れませんでした。投稿は済んでいるので、投稿はやり直さず `mietask share --file %s` だけをやり直してください: %v\n", sharePath, err)
 		} else if !dry {
 			consumeInput(sharePath)
+		}
+	}
+	if withProjects {
+		if err := sendShare(share, dry); err != nil {
+			fmt.Fprintf(os.Stderr, "警告: 持っている案件を窓口に送れませんでした。投稿は済んでいるので、投稿はやり直さず `mietask share --projects` だけをやり直してください: %v\n", err)
 		}
 	}
 	if !dry {

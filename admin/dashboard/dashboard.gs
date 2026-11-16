@@ -31,7 +31,7 @@
  */
 
 var TAB_LABEL = { members: 'メンバー', projects: '案件', self: '自分', admin: '管理' };
-var STATE_LABEL = ['期限超過あり', '相手待ち・確認待ち', '進行中', '手伝い', 'これから'];
+var STATE_LABEL = ['期限超過あり', '相手待ち・確認待ち', '動いている', '手伝い', 'しばらく動きなし', 'これから'];
 
 function doGet(e) {
   var email = String(Session.getActiveUser().getEmail() || '').trim().toLowerCase();
@@ -110,24 +110,27 @@ function hm_(iso) {
   return m ? Number(m[1]) + ':' + m[2] : '';
 }
 
-function rank_(r) { return Math.max(0, Math.min(4, Number(r) || 0)); }
+function rank_(r) { return Math.max(0, Math.min(5, Number(r) || 0)); }
 
-// 1人ぶん。名前・いまの数・気にすべきもの、その下に案件ごとの1行（何をしているかの一言と、件数・期限・期間）
+// 1人ぶん。名前・持っている案件の数・気にすべきもの、その下に案件ごとの1行（関わり方・いまの状態の一言・最後に動いた日など）。
+// 表にはしない（長い案件名が変なところで折り返さないよう、1行を文章のように流す）
 function personHtml_(c, teamsOf) {
   var flags = (c.overdue.length ? '<span class="flag f0">期限超過 ' + c.overdue.length + '</span>' : '') +
     (c.waiting.length ? '<span class="flag f1">相手待ち ' + c.waiting.length + '</span>' : '');
-  var sub = [(c.team_names || c.teams).join('・'), '今 ' + c.now + '件', c.later ? 'これから ' + c.later + '件' : ''].filter(String).join('・');
+  var sub = [(c.team_names || c.teams).join('・'), '持っている案件 ' + c.now + '件' + (c.idle ? '（うちしばらく動きなし ' + c.idle + '件）' : ''),
+    c.later ? 'これから ' + c.later + '件' : ''].filter(String).join('・');
   var items = c.items.map(function (it) {
     var r = rank_(it.rank);
-    return '<div class="pn"><span class="dot d' + r + '" title="' + STATE_LABEL[r] + '"></span>' + esc_(it.name) +
-      (it.role ? ' <span class="role">' + esc_(it.role) + '</span>' : '') + '</div>' +
-      '<div class="pd">' + esc_(it.note) + (it.meta ? '<span class="meta">' + (it.note ? '・' : '') + esc_(it.meta) + '</span>' : '') +
-      (it.note || it.meta ? '' : '<span class="meta">' + STATE_LABEL[r] + '</span>') + '</div>';
+    var tail = [it.note || (it.meta ? '' : STATE_LABEL[r])].filter(String);
+    return '<li class="r' + r + '"><span class="dot d' + r + '" title="' + STATE_LABEL[r] + '"></span><span class="pn">' + esc_(it.name) + '</span>' +
+      (it.role ? '<span class="role">' + esc_(it.role) + '</span>' : '') +
+      (tail.length ? '<span class="pd">' + esc_(tail[0]) + '</span>' : '') +
+      (it.meta ? '<span class="meta">' + esc_(it.meta) + '</span>' : '') + '</li>';
   }).join('');
   return '<article class="person" data-teams=" ' + esc_((teamsOf || []).join(' ')) + ' ">' +
     '<header><h3>' + esc_(c.name) + '</h3><span class="sub">' + esc_(sub) + '</span>' + flags + '</header>' +
     (c.notes ? '<p class="notes">' + esc_(c.notes) + '</p>' : '') +
-    (items ? '<div class="items">' + items + '</div>' : '<p class="notes">見える案件はありません</p>') +
+    (items ? '<ul class="items">' + items + '</ul>' : '<p class="notes">見える案件はありません</p>') +
     (c.share_at ? '<p class="foot">ミエタスク ' + md_(c.share_at) + ' ' + hm_(c.share_at) + '時点</p>' : '') + '</article>';
 }
 
@@ -150,8 +153,8 @@ function projectsPanel_(v) {
     var who = p.members.map(function (m) { return esc_(m.name) + (m.role ? '<span class="role">' + esc_(m.role) + '</span>' : ''); }).join('、') +
       (p.others ? '<span class="meta">・ほかに' + Number(p.others) + '人</span>' : '');
     var meta = [p.due_label ? '次の期限 ' + p.due_label : '', p.counts || '', p.progress ? p.progress.label : ''].filter(String).join('・');
-    return '<div class="prow"><div><span class="dot d' + r + '"></span>' + esc_(p.name) + '<div class="meta state">' + STATE_LABEL[r] + '</div></div>' +
-      '<div><div>' + who + '</div>' + (meta ? '<div class="meta">' + esc_(meta) + '</div>' : '') + '</div></div>';
+    return '<div class="prow"><div><span class="dot d' + r + '"></span><span class="pn">' + esc_(p.name) + '</span><span class="meta">' + STATE_LABEL[r] + '</span></div>' +
+      '<div class="who">' + who + '</div>' + (meta ? '<div class="meta who">' + esc_(meta) + '</div>' : '') + '</div>';
   }).join('');
   return '<p class="lead">同じ案件に誰が関わっているかを確かめる補助の一覧です。案件の名前は、各自の Claude が Slack・メール・議事録・MTD から束ねてつけたもの' +
     '（同じ案件が別の名前で出ていたら、システム管理者が1つにまとめられます）。</p>' +
@@ -457,14 +460,16 @@ var CSS = [
   '.person{padding:14px 0;border-top:1px solid var(--line)}.person:first-child{border-top:0}',
   '.person header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.person h3{margin:0;font-size:15px;font-weight:600}.sub{color:var(--faint);font-size:12px}',
   '.flag{font-size:12px;padding:1px 8px;border-radius:999px}.f0{background:var(--red-bg);color:var(--red)}.f1{background:var(--amber-bg);color:var(--amber)}',
-  '.items{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:4px 16px;margin-top:8px;font-size:13px}',
-  '.pn{overflow-wrap:anywhere}.pd{color:var(--muted);overflow-wrap:anywhere}.role{color:var(--faint);font-size:12px;margin-left:4px}.meta{color:var(--faint);font-size:12px}',
-  '.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px;background:var(--line)}',
-  '.d0{background:var(--red)}.d1{background:var(--amber)}.d2{background:var(--faint)}.d3{background:var(--line)}.d4{background:var(--blue)}',
+  '.items{list-style:none;margin:8px 0 0;padding:0;font-size:13px}.items li{padding:3px 0 3px 14px;text-indent:-14px;line-height:1.55}',
+  '.items li.r4 .pn,.items li.r4 .pd{color:var(--faint)}',
+  '.pn{font-weight:500;overflow-wrap:anywhere}.pd{color:var(--muted);margin-left:10px;overflow-wrap:anywhere}',
+  '.role{color:var(--faint);font-size:12px;margin-left:6px}.meta{color:var(--faint);font-size:12px;margin-left:10px}',
+  '.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px;background:var(--line);text-indent:0}',
+  '.d0{background:var(--red)}.d1{background:var(--amber)}.d2{background:var(--faint)}.d3{background:var(--line)}.d4{background:transparent;border:1px solid var(--faint)}.d5{background:var(--blue)}',
   '.notes{margin:4px 0 0;color:var(--faint);font-size:12px}.foot{margin:6px 0 0;color:var(--faint);font-size:11px}',
   '.projects{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 16px}',
-  '.prow{display:grid;grid-template-columns:minmax(0,240px) minmax(0,1fr);gap:16px;padding:12px 0;border-top:1px solid var(--line);font-size:13px}.prow:first-child{border-top:0}',
-  '.state{margin-left:14px}.empty{color:var(--muted)}',
+  '.prow{padding:10px 0;border-top:1px solid var(--line);font-size:13px}.prow:first-child{border-top:0}.prow .who{margin:2px 0 0 14px}.prow .meta.who{margin-left:14px}',
+  '.empty{color:var(--muted)}',
   '.problems{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:8px 12px;margin:10px 0;font-size:13px}.problems p{margin:2px 0}',
   '.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}',
   '.subnav button{font:inherit;font-size:13px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 12px;color:var(--muted);cursor:pointer}',
@@ -483,5 +488,5 @@ var CSS = [
   '.field{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}.label{font-size:13px;color:var(--muted)}.note{font-size:12px;color:var(--faint)}',
   '.checks{display:flex;flex-wrap:wrap;gap:6px 14px}.checks label{display:flex;gap:4px;align-items:center}',
   '.err{color:var(--red);font-size:13px;min-height:1em}.actions{display:flex;align-items:center;gap:8px}.extra{margin-right:auto}',
-  '@media (max-width:640px){.items,.prow{grid-template-columns:1fr;gap:2px}.pn{margin-top:6px}}',
+
 ].join('');

@@ -25,18 +25,20 @@ import (
 )
 
 type shareItem struct {
-	Name    string `json:"name"`
-	State   string `json:"state"`
-	Due     string `json:"due,omitempty"`
-	Note    string `json:"note,omitempty"`    // いま何をしているかの一言（題名・人の名前は入れない）
-	Open    *int   `json:"open,omitempty"`    // まとまりの中で、まだ終わっていないタスクの数
-	Overdue *int   `json:"overdue,omitempty"` // そのうち期限が過ぎているものの数
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	Due      string `json:"due,omitempty"`
+	Note     string `json:"note,omitempty"`      // いま何をしているかの一言（題名・人の名前は入れない）
+	Role     string `json:"role,omitempty"`      // 関わり方（リード・担当・手伝い など）
+	LastSeen string `json:"last_seen,omitempty"` // 最後に動いた日（持ち案件の台帳から）
+	Open     *int   `json:"open,omitempty"`      // まとまりの中で、まだ終わっていないタスクの数
+	Overdue  *int   `json:"overdue,omitempty"`   // そのうち期限が過ぎているものの数
 }
 
-var shareStates = []string{"動いている", "相手待ち", "期限が過ぎたものあり"}
+var shareStates = []string{"動いている", "相手待ち", "期限が過ぎたものあり", stateIdle}
 
 const (
-	shareMax      = 20
+	shareMax      = 40
 	shareNameMax  = 40
 	shareCountMax = 999
 	shareNoteMax  = 40
@@ -75,6 +77,9 @@ func loadShare(path string) ([]shareItem, error) {
 		due, _ := it["due"].(string)
 		note, _ := it["note"].(string)
 		note = strings.TrimSpace(note)
+		role, _ := it["role"].(string)
+		role = strings.TrimSpace(role)
+		last, _ := it["last_seen"].(string)
 		switch {
 		case name == "":
 			return nil, fmt.Errorf("%s の案件名が空です", where)
@@ -90,6 +95,10 @@ func loadShare(path string) ([]shareItem, error) {
 			return nil, fmt.Errorf("%s の一言が長すぎます（%d文字まで）: %s", where, shareNoteMax, note)
 		case reShareBad.MatchString(note):
 			return nil, fmt.Errorf("%s の一言に改行・リンク・メンション・メールアドレスは入れられません: %s", where, note)
+		case utf8.RuneCountInString(role) > projectRoleMax || reShareBad.MatchString(role):
+			return nil, fmt.Errorf("%s の関わり方は%d文字までで、改行・リンク・メンションは入れられません: %s", where, projectRoleMax, role)
+		case last != "" && !reYMD.MatchString(last):
+			return nil, fmt.Errorf("%s の最後に動いた日は yyyy-mm-dd で書きます（%q になっています）", where, last)
 		}
 		open, err := shareCount(it, "open", where+" の残りの件数（open）")
 		if err != nil {
@@ -102,7 +111,7 @@ func loadShare(path string) ([]shareItem, error) {
 		if open != nil && overdue != nil && *overdue > *open {
 			return nil, fmt.Errorf("%s の超過の件数（%d）が残りの件数（%d）より多くなっています", where, *overdue, *open)
 		}
-		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Open: open, Overdue: overdue})
+		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Role: role, LastSeen: last, Open: open, Overdue: overdue})
 	}
 	return out, nil
 }
@@ -154,12 +163,17 @@ func shortDate(ymd string) string {
 
 // sharePreview は本人のチャンネルに出す「管理者に届く内容」。
 func sharePreview(items []shareItem) string {
-	lines := []string{":eyes: *管理者に届く内容*（管理者のページに、案件ごとの状態と一言が出ます。タスクの題名・メールやDMの中身は届きません）"}
+	lines := []string{":eyes: *管理者に届く内容*（管理者のページに、持っている案件と、それぞれのいまの状態の一言が出ます。タスクの題名・メールやDMの中身は届きません）"}
 	if len(items) == 0 {
 		lines = append(lines, "• 案件なし")
 	}
 	for _, it := range items {
-		l := "• " + it.Name + " — " + it.State
+		l := "• " + it.Name
+		if it.Role != "" {
+			l += "（" + it.Role + "）"
+		}
+		l += " — " + it.State
+
 		if c := countLabel(it); c != "" {
 			l += "・" + c
 		}
@@ -168,6 +182,9 @@ func sharePreview(items []shareItem) string {
 		}
 		if it.Note != "" {
 			l += "：" + it.Note
+		}
+		if it.LastSeen != "" && it.LastSeen != ymd(todayJST()) {
+			l += "（最後に動いた " + shortDate(it.LastSeen) + "）"
 		}
 
 		lines = append(lines, l)
@@ -289,4 +306,17 @@ func withSharePreview(payloadPath string, items []shareItem) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// cmdShareProjects は持ち案件の一覧だけを窓口に送り直す（投稿のあとで送れなかったとき）。
+func cmdShareProjects(dryRun bool) error {
+	b, err := loadAgedBook()
+	if err != nil {
+		return err
+	}
+	items := projectShareItems(b)
+	if dryRun {
+		fmt.Println(sharePreview(items))
+	}
+	return sendShare(items, dryRun)
 }
