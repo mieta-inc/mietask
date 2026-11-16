@@ -111,6 +111,19 @@ type Registry struct {
 	Members  []Member          `json:"members"`
 	Settings map[string]string `json:"settings"`
 	Activity []Activity        `json:"activity"`
+	// Daily は各自のミエタスクが毎朝送る件数（直近8日）。窓口が管理者にだけ返す
+	Daily []DailyStatus `json:"daily,omitempty"`
+}
+
+// DailyStatus は1人1日分の件数。題名やメモは入らない（管理者に届くのは件数だけ）
+type DailyStatus struct {
+	Date    string `json:"date"`
+	SlackID string `json:"slack_id"`
+	Name    string `json:"name"`
+	Overdue int    `json:"overdue"`
+	Today   int    `json:"today"`
+	Week    int    `json:"week"`
+	At      string `json:"at"`
 }
 
 type registryCache struct {
@@ -530,6 +543,15 @@ func filterRegistry(reg *Registry, ids []string) *Registry {
 				out.Members = append(out.Members, m)
 				break
 			}
+		}
+	}
+	who := map[string]bool{}
+	for _, m := range out.Members {
+		who[m.SlackID] = true
+	}
+	for _, d := range reg.Daily {
+		if who[d.SlackID] {
+			out.Daily = append(out.Daily, d)
 		}
 	}
 	return out

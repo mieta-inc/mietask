@@ -4,7 +4,7 @@
 // 追加のインストールなしで Mac・Windows で動くように、1本の実行ファイルにしてある。
 //
 //	mietask sync thread|complete|upsert|status|record ...   台帳の更新（旧 task_sync.py）
-//	mietask post ...                                          Slackへ投稿（自分のチャンネル＋所属チームのまとめ）
+//	mietask post ...                                          Slackへ投稿（自分のチャンネル。管理者には件数だけ）
 //	mietask channel ...                                       投稿先チャンネルの作成（旧 make_channel.py）
 //	mietask team-payload ...                                  まとめチャンネル用の投稿内容（旧 team_payload.py）
 //	mietask delete ...                                        Botの投稿を消す（旧 delete_slack.py）
@@ -88,10 +88,9 @@ func usage() {
   sync upsert --findings FILE         巡回結果を台帳に登録する
   sync status ID... --status S        タスクの status を変える
   sync record --ts TS                 投稿したスレッドの ts を控える
-  post --payload FILE                 Slackへ親＋子スレッドを投稿する
-                                      （自分のチャンネル＋所属チームのまとめ。--no-team でまとめを止める）
+  post --payload FILE                 自分のチャンネルへ親＋子スレッドを投稿する
+                                      （管理者には件数だけを送る。--no-team で送らない）
   channel --name NAME                 投稿先のプライベートチャンネルを作る
-  post-team --payload FILE            所属チームのまとめチャンネルへ投稿する（返信案は除く）
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
   delete --ts TS                      Botの投稿を消す
@@ -123,13 +122,12 @@ func run(argv []string) int {
 		var a *args
 		if a, err = parseArgs(rest, "no-team"); err == nil {
 			err = cmdPost(a.get("payload"), a.get("channel"), a.get("token-file"), a.flags["dry-run"])
-			// 自分のチャンネルへ出せたら、続けて所属チームのまとめへも出す。
-			// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、
-			// --no-team を付けたときはしない。
+			// 自分のチャンネルへ出せたら、管理者向けに件数（超過・今日・今週）だけを窓口に送る。
+			// 一覧そのもの（題名・メモ・出どころ）はまとめに出さない。DM や非公開チャンネル、
+			// メールの内容が入るため。payload を消す前に読む。
+			// 出し先を --channel で指定したとき、payload を標準入力で渡したとき、--no-team のときは送らない。
 			if err == nil && a.get("channel") == "" && a.get("payload") != "" && !a.flags["no-team"] {
-				if terr := cmdPostTeam(a.get("payload"), "", a.flags["dry-run"]); terr != nil {
-					fmt.Fprintf(os.Stderr, "警告: まとめへの投稿に失敗しました。自分のチャンネルへの投稿は済んでいるので、やり直さないでください。\n%v\n", terr)
-				}
+				sendTeamStatus(a.get("payload"), a.flags["dry-run"])
 			}
 			if err == nil && !a.flags["dry-run"] {
 				consumeInput(a.get("payload"))
@@ -170,15 +168,6 @@ func run(argv []string) int {
 		default:
 			fmt.Fprintf(os.Stderr, "不明な指定です: %s（home か tmp）\n", which)
 			return 2
-		}
-	case "post-team":
-		var a *args
-		if a, err = parseArgs(rest); err == nil {
-			if !a.has("payload") {
-				err = errors.New("--payload が要ります。")
-			} else {
-				err = cmdPostTeam(a.get("payload"), a.get("name"), a.flags["dry-run"])
-			}
 		}
 	case "registry":
 		var a *args
