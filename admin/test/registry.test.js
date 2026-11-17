@@ -1444,3 +1444,24 @@ test('持ち案件：関わり方・最後に動いた日・しばらく動き�
   env.clock.today = '2026-11-24';
   assert.strictEqual(rows().length, 0);
 });
+
+test('持ち案件の詳細：受け取って人の並びに渡し、ページではトグルで開く。長いもの・リンクの入ったものは断る', () => {
+  const env = load();
+  seedDash(env);
+  const k = issue(env, 7); // U4
+  const share = items => call(env, { id: k.i, k: k.k, action: 'share', items });
+  assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: 'あ'.repeat(151) }]).error, 'bad_share');
+  assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: 'https://x.example を見る' }]).error, 'bad_share');
+  // < > はリンクやメンションの入口になるので断る（詳細も一言と同じ決まり）
+  assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: '<手作業>の残る3か所' }]).error, 'bad_share');
+  assert.ok(share([
+    { name: '社内DX', role: 'リード', state: '動いている', note: '経費精算の見直し', detail: '申請から承認までの流れを図にし、手作業の残る3か所を自動化する案を作っている。"来週"の定例で方向を決める' },
+    { name: '採用広報', state: '動いている', note: '記事の公開待ち' },
+  ]).ok);
+  const c = dash(env, 'nomtd@example.com').self;
+  assert.strictEqual(c.items.find(i => i.name === '社内DX').detail, '申請から承認までの流れを図にし、手作業の残る3か所を自動化する案を作っている。"来週"の定例で方向を決める');
+  assert.ok(!('detail' in c.items.find(i => i.name === '採用広報')));
+  const h = loadDashboard(env, { email: 'nomtd@example.com' }).page();
+  assert.match(h, /<details><summary><div class="l1">.*?社内DX.*?<\/div><div class="l2">経費精算の見直し<\/div><\/summary><p class="detail">申請から承認までの流れ.*?&quot;来週&quot;の定例で方向を決める<\/p><\/details>/);
+  assert.match(h, /<li class="r2"><div class="l1">.*?採用広報.*?<\/div><div class="l2">記事の公開待ち<\/div><\/li>/, '詳細の無い案件までトグルにしている');
+});

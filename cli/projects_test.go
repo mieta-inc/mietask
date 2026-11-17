@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func fakeToday(t *testing.T, ymd string) {
@@ -127,5 +129,47 @@ func TestPostWithProjects(t *testing.T) {
 	a, _ = parseArgs([]string{"--payload", payload, "--projects", "--share", "x.json"}, "no-team", "projects")
 	if err := runPost(a); err == nil {
 		t.Error("--projects と --share を一緒に受け付けた")
+	}
+}
+
+// 詳細：台帳に残り、書かなかった日は前のものが残る。「管理者に届く内容」が長くなれば子スレッドを分ける
+func TestProjectDetail(t *testing.T) {
+	setupHome(t)
+	fakeToday(t, "2026-11-01")
+	_, err := runUpdate(t, `{"touched":[{"name":"社内DX","role":"リード","note":"経費精算の見直し","detail":"申請から承認までの流れを図にし、手作業の残る3か所を自動化する案を作っている。来週の定例で方向を決める","state":"動いている"}]}`)
+	must(t, err)
+	_, err = runUpdate(t, `{"touched":[{"name":"社内DX","state":"相手待ち"}]}`)
+	must(t, err)
+	b, _ := loadBook()
+	if !strings.HasPrefix(b.Projects[0].Detail, "申請から承認まで") {
+		t.Fatalf("詳細が残っていない: %+v", b.Projects[0])
+	}
+	if _, err := runUpdate(t, `{"touched":[{"name":"x","state":"動いている","detail":"`+strings.Repeat("あ", 151)+`"}]}`); err == nil {
+		t.Error("長すぎる詳細を受け付けた")
+	}
+	if _, err := runUpdate(t, `{"touched":[{"name":"x","state":"動いている","detail":"<@U1> に確認"}]}`); err == nil {
+		t.Error("メンションの入った詳細を受け付けた")
+	}
+	p := sharePreview(projectShareItems(b))
+	if !strings.Contains(p, "• 社内DX（リード） — 相手待ち：経費精算の見直し\n　　申請から承認まで") {
+		t.Errorf("管理者に届く内容に詳細が出ていない:\n%s", p)
+	}
+	// 40件・詳細つきでも、1通の上限を超えないように分ける（案件と詳細は切り離さない）
+	var items []shareItem
+	for i := 0; i < 40; i++ {
+		items = append(items, shareItem{Name: fmt.Sprintf("案件%02d", i), State: "動いている", Note: strings.Repeat("い", 40), Detail: strings.Repeat("う", 150)})
+	}
+	parts := splitPreview(sharePreview(items))
+	if len(parts) < 2 {
+		t.Fatalf("分けていない: %d通", len(parts))
+	}
+	for i, x := range parts {
+		s := x.(string)
+		if utf8.RuneCountInString(s) > 3900 {
+			t.Errorf("%d通目が長すぎる: %d文字", i, utf8.RuneCountInString(s))
+		}
+		if strings.HasPrefix(strings.SplitN(s, "\n", 2)[1], "　　") {
+			t.Errorf("%d通目が詳細の行から始まっている", i)
+		}
 	}
 }

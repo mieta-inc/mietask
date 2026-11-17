@@ -26,6 +26,7 @@ const (
 	stateIdle      = "しばらく動きなし"
 	projectNameMax = 30
 	projectRoleMax = 12
+	projectDetail  = 150 // 詳細の上限（ページで2〜3行）
 )
 
 // 本人の Claude が付けられる状態（「しばらく動きなし」は日付から決まるので付けられない）
@@ -35,6 +36,7 @@ type project struct {
 	Name     string `json:"name"`
 	Role     string `json:"role,omitempty"`
 	Note     string `json:"note,omitempty"`
+	Detail   string `json:"detail,omitempty"` // 詳細（2〜3行。ページではトグルで開く）
 	State    string `json:"state"`
 	Since    string `json:"since"`
 	LastSeen string `json:"last_seen"`
@@ -167,7 +169,7 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 		for _, c := range []struct {
 			label, v string
 			max      int
-		}{{"案件名", p.Name, projectNameMax}, {"関わり方", p.Role, projectRoleMax}, {"一言", p.Note, shareNoteMax}} {
+		}{{"案件名", p.Name, projectNameMax}, {"関わり方", p.Role, projectRoleMax}, {"一言", p.Note, shareNoteMax}, {"詳細", p.Detail, projectDetail}} {
 			if err := checkProjectText(where, c.label, strings.TrimSpace(c.v), c.max); err != nil {
 				return nil, err
 			}
@@ -213,7 +215,7 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 		notes = append(notes, "外しました: "+name)
 	}
 	for _, t := range u.Touched {
-		t.Name, t.Role, t.Note = strings.TrimSpace(t.Name), strings.TrimSpace(t.Role), strings.TrimSpace(t.Note)
+		t.Name, t.Role, t.Note, t.Detail = strings.TrimSpace(t.Name), strings.TrimSpace(t.Role), strings.TrimSpace(t.Note), strings.TrimSpace(t.Detail)
 		if i := b.find(t.Name); i >= 0 {
 			p := &b.Projects[i]
 			p.State, p.LastSeen = t.State, today
@@ -223,9 +225,12 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 			if t.Note != "" {
 				p.Note = t.Note
 			}
+			if t.Detail != "" {
+				p.Detail = t.Detail
+			}
 			continue
 		}
-		b.Projects = append(b.Projects, project{Name: t.Name, Role: t.Role, Note: t.Note, State: t.State, Since: today, LastSeen: today})
+		b.Projects = append(b.Projects, project{Name: t.Name, Role: t.Role, Note: t.Note, Detail: t.Detail, State: t.State, Since: today, LastSeen: today})
 		notes = append(notes, "足しました: "+t.Name)
 	}
 	return notes, nil
@@ -248,7 +253,7 @@ func sortedProjects(b *projectBook) []project {
 func projectShareItems(b *projectBook) []shareItem {
 	var items []shareItem
 	for _, p := range sortedProjects(b) {
-		items = append(items, shareItem{Name: p.Name, State: effectiveState(p), Note: p.Note, Role: p.Role, LastSeen: p.LastSeen})
+		items = append(items, shareItem{Name: p.Name, State: effectiveState(p), Note: p.Note, Detail: p.Detail, Role: p.Role, LastSeen: p.LastSeen})
 	}
 	if items == nil {
 		items = []shareItem{}
@@ -270,6 +275,10 @@ func printBook(b *projectBook) {
 		}
 		l += "　最後に動いた " + shortDate(p.LastSeen)
 		fmt.Println(l)
+		if p.Detail != "" {
+			fmt.Println("    " + p.Detail)
+		}
+
 	}
 }
 
