@@ -257,6 +257,12 @@ function renderPage_(v, want) {
 }
 
 // 管理のタブの中身。動作状況と台帳の設定だけ（案件の中身は出さない）
+// 管理台帳（スプレッドシート）を別のタブで開くリンク。窓口が返した Google スプレッドシートの URL だけを使う
+function ledgerLink_(url) {
+  if (!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(String(url || ''))) return '';
+  return '<a class="ledger" href="' + esc_(url) + '" target="_blank" rel="noopener">管理台帳を開く ↗</a>';
+}
+
 function adminBody_(a) {
   var rows = a.health || [];
   var issues = rows.filter(function (h) { return h.issues && h.issues.length; });
@@ -298,7 +304,8 @@ function adminBody_(a) {
   };
   return '<div class="subnav" role="tablist">' +
     '<button type="button" data-sub="a-members" aria-selected="true">メンバー</button><button type="button" data-sub="a-teams" aria-selected="false">チーム</button>' +
-    '<button type="button" data-sub="a-aliases" aria-selected="false">案件の別名</button><button type="button" data-sub="a-log" aria-selected="false">変更の記録</button></div>' +
+    '<button type="button" data-sub="a-aliases" aria-selected="false">案件の別名</button><button type="button" data-sub="a-log" aria-selected="false">変更の記録</button>' +
+    ledgerLink_(a.ledger_url) + '</div>' +
     '<div data-subpanel="a-members">' + fix +
     '<div class="bar"><span class="lead">動いているかどうかの点検と、台帳の操作です。案件の中身は出ません。鍵は Bot が本人に DM で送り、この画面には出しません。</span>' +
     '<button type="button" data-add-member>メンバーを足す</button></div>' +
@@ -598,6 +605,7 @@ var CSS = [
   '.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}',
   '.subnav button{font:inherit;font-size:13px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 12px;color:var(--muted);cursor:pointer}',
   '.subnav button[aria-selected=true]{color:var(--ink);border-color:var(--ink);background:var(--brand-soft)}',
+  '.subnav .ledger{margin-left:auto;align-self:center;font-size:13px;color:var(--ink)}',
   '.scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}table{border-collapse:collapse;width:100%;font-size:13px}',
   'th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}tr:last-child td{border-bottom:0}th{color:var(--muted);font-weight:500}',
   'tr.stopped td{color:var(--faint)}td.warn{color:var(--amber)}td.acts{text-align:right}',

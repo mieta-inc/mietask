@@ -1448,6 +1448,7 @@ function adminData_(ss, today) {
     aliases: rows_(ss, SHEETS.aliases).filter(function (r) { return r['別名'] && r['案件名']; })
       .map(function (r) { return { alias: r['別名'], name: r['案件名'] }; }),
     log: rows_(ss, SHEETS.changes).slice(-30).reverse(), // 直近の変更（新しい順）
+    ledger_url: ss.getUrl(), // 管理台帳のスプレッドシート（システム管理者にだけ返す。開けるかはシートの共有で決まる）
   };
 }
 
