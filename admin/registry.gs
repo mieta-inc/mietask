@@ -1195,7 +1195,7 @@ function personItems_(entries, resolve, today) {
     var meta = [count, dues[0] ? '次の期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '',
       last && last < today ? '最後に動いた ' + dateLabel_(last, today) : ''].filter(String).join('・');
     return { name: g.name, rank: rank, role: roles.join('・'), src: g.mtd && g.share ? 'both' : g.mtd ? 'mtd' : 'share',
-      note: note, detail: detail, meta: meta, start: start, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
+      note: note, detail: detail, meta: meta, start: start, last: last, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
   });
   return sortByRank_(items);
 }
@@ -1217,7 +1217,7 @@ function personCard_(base, entries, resolve, today) {
   return {
     slack_id: base.slack_id, name: base.name, teams: base.teams, notes: base.notes, share_at: base.share_at,
     items: items.map(function (it) {
-      var o = { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta };
+      var o = { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta, last: it.last || '' };
       if (it.detail) o.detail = it.detail;
       return o;
     }),

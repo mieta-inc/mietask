@@ -1017,7 +1017,11 @@ test('ダッシュボードのページ：見る人でタブが変わる。メ�
   const ex = loadDashboard(env, { email: 'exec@example.com' }).page();
   assert.deepStrictEqual(tabsOf(ex), ['メンバー', '案件', '自分']);
   const members = ex.match(/<section role="tabpanel" id="members">([\s\S]*?)<\/section>/)[1];
-  assert.strictEqual((members.match(/<article class="person"/g) || []).length, 9);
+  // 人は丸いボタンで1人ずつ選ぶ（最初の1人だけ開いておく）
+  assert.strictEqual((members.match(/data-pick="/g) || []).length, 9);
+  assert.strictEqual((members.match(/<div class="person" data-person="[^"]+">/g) || []).length, 1);
+  assert.strictEqual((members.match(/<div class="person" data-person="[^"]+" hidden>/g) || []).length, 8);
+  assert.ok(members.includes('<div class="sortbar">') && members.includes('data-sort="last"'), '並び替えが無い');
   assert.ok(members.includes('<option value="pd">PD</option>') && members.includes('data-teams=" all pm pm1 "'), members);
   assert.ok(!ex.includes('data-tab="admin"') && !ex.includes('メンバーを足す'), '役員に管理のタブが出ている');
 
@@ -1326,7 +1330,7 @@ test('案件のページ：人の並びに一言と件数を出し、案件の�
   assert.ok(people.indexOf('<h3>別チーム</h3>') < people.indexOf('<h3>ひも付けなし</h3>'), '気にすべきものがある人から並んでいない');
   assert.ok(people.includes('<span class="flag f0">期限超過 1</span>') && people.includes('残り5件（うち超過2件）'), people);
   const projects = h.match(/<section role="tabpanel" id="projects"[^>]*>([\s\S]*?)<\/section>/)[1];
-  assert.ok(projects.includes('<span class="dot d1"></span><span class="pn">渋谷区WS</span>') && projects.includes('別チーム<span class="role">PM</span>') &&
+  assert.ok(projects.includes('<div class="card s1" data-rank="1" data-name="渋谷区WS"') && projects.includes('別チーム<span class="role">PM</span>') &&
     projects.includes('ほかに1人') && projects.includes('残り7件（うち超過2件）') && projects.includes('次の期限 11/20・残り3件・期間の5割・残り6週'), projects);
   assert.ok(h.includes('&lt;b&gt;太字&lt;/b&gt;の案件') && !h.includes('<b>太字'), '案件名を escape していない');
   assert.ok(!h.includes('PM1だけの案件'));
@@ -1462,6 +1466,7 @@ test('持ち案件の詳細：受け取って人の並びに渡し、ページ�
   assert.strictEqual(c.items.find(i => i.name === '社内DX').detail, '申請から承認までの流れを図にし、手作業の残る3か所を自動化する案を作っている。"来週"の定例で方向を決める');
   assert.ok(!('detail' in c.items.find(i => i.name === '採用広報')));
   const h = loadDashboard(env, { email: 'nomtd@example.com' }).page();
-  assert.match(h, /<details><summary><div class="l1">.*?社内DX.*?<\/div><div class="l2">経費精算の見直し<\/div><\/summary><p class="detail">申請から承認までの流れ.*?&quot;来週&quot;の定例で方向を決める<\/p><\/details>/);
-  assert.match(h, /<li class="r2"><div class="l1">.*?採用広報.*?<\/div><div class="l2">記事の公開待ち<\/div><\/li>/, '詳細の無い案件までトグルにしている');
+  const card = n => h.split('<div class="card ').find(x => x.includes('data-name="' + n + '"'));
+  assert.match(card('社内DX'), /<span class="pn">社内DX<\/span><span class="role">リード<\/span><\/div><div class="note">経費精算の見直し<\/div>.*<details><summary>詳細<\/summary><p class="detail">申請から承認までの流れ.*?&quot;来週&quot;の定例で方向を決める<\/p><\/details>/);
+  assert.ok(card('採用広報').includes('<div class="note">記事の公開待ち</div>') && !card('採用広報').includes('<details>'), '詳細の無い案件までトグルにしている');
 });
