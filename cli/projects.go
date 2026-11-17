@@ -32,11 +32,19 @@ const (
 // 本人の Claude が付けられる状態（「しばらく動きなし」は日付から決まるので付けられない）
 var touchStates = []string{"動いている", "相手待ち", "期限が過ぎたものあり"}
 
+// 案件の段階（どこまで進んでいるか）
+var projectStages = []string{"準備", "進行中", "仕上げ", "運用中"}
+
+const projectNextMax = 30 // 次の節目の上限
+
 type project struct {
 	Name     string `json:"name"`
 	Role     string `json:"role,omitempty"`
 	Note     string `json:"note,omitempty"`
-	Detail   string `json:"detail,omitempty"` // 詳細（2〜3行。ページではトグルで開く）
+	Detail   string `json:"detail,omitempty"`    // 詳細（数行。ページではトグルで開く）
+	Stage    string `json:"stage,omitempty"`     // 段階（準備・進行中・仕上げ・運用中）
+	Next     string `json:"next,omitempty"`      // 次の節目（何が起きるか）
+	NextDate string `json:"next_date,omitempty"` // 次の節目の日付（分かるときだけ）
 	State    string `json:"state"`
 	Since    string `json:"since"`
 	LastSeen string `json:"last_seen"`
@@ -169,10 +177,19 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 		for _, c := range []struct {
 			label, v string
 			max      int
-		}{{"案件名", p.Name, projectNameMax}, {"関わり方", p.Role, projectRoleMax}, {"一言", p.Note, shareNoteMax}, {"詳細", p.Detail, projectDetail}} {
+		}{{"案件名", p.Name, projectNameMax}, {"関わり方", p.Role, projectRoleMax}, {"一言", p.Note, shareNoteMax}, {"詳細", p.Detail, projectDetail}, {"次の節目", p.Next, projectNextMax}} {
 			if err := checkProjectText(where, c.label, strings.TrimSpace(c.v), c.max); err != nil {
 				return nil, err
 			}
+		}
+		if p.Stage != "" && !contains(projectStages, p.Stage) {
+			return nil, fmt.Errorf("%s の段階は %s のどれかです（%q になっています）", where, strings.Join(projectStages, "・"), p.Stage)
+		}
+		if p.NextDate != "" && !reYMD.MatchString(p.NextDate) {
+			return nil, fmt.Errorf("%s の次の節目の日付は yyyy-mm-dd で書きます（%q になっています）", where, p.NextDate)
+		}
+		if p.NextDate != "" && strings.TrimSpace(p.Next) == "" {
+			return nil, fmt.Errorf("%s は次の節目の日付だけがあります。何が起きるか（next）も書いてください", where)
 		}
 	}
 	for i, r := range u.Rename {
@@ -228,9 +245,17 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 			if t.Detail != "" {
 				p.Detail = t.Detail
 			}
+			if t.Stage != "" {
+				p.Stage = t.Stage
+			}
+			// 次の節目は、書いた日に日付ごと入れ替える（節目が過ぎて次に移ったとき、古い日付が残らないように）
+			if strings.TrimSpace(t.Next) != "" {
+				p.Next, p.NextDate = strings.TrimSpace(t.Next), t.NextDate
+			}
 			continue
 		}
-		b.Projects = append(b.Projects, project{Name: t.Name, Role: t.Role, Note: t.Note, Detail: t.Detail, State: t.State, Since: today, LastSeen: today})
+		b.Projects = append(b.Projects, project{Name: t.Name, Role: t.Role, Note: t.Note, Detail: t.Detail, Stage: t.Stage,
+			Next: strings.TrimSpace(t.Next), NextDate: t.NextDate, State: t.State, Since: today, LastSeen: today})
 		notes = append(notes, "足しました: "+t.Name)
 	}
 	return notes, nil
@@ -253,7 +278,8 @@ func sortedProjects(b *projectBook) []project {
 func projectShareItems(b *projectBook) []shareItem {
 	var items []shareItem
 	for _, p := range sortedProjects(b) {
-		items = append(items, shareItem{Name: p.Name, State: effectiveState(p), Note: p.Note, Detail: p.Detail, Role: p.Role, LastSeen: p.LastSeen})
+		items = append(items, shareItem{Name: p.Name, State: effectiveState(p), Note: p.Note, Detail: p.Detail, Role: p.Role, LastSeen: p.LastSeen,
+			Stage: p.Stage, Next: p.Next, NextDate: p.NextDate})
 	}
 	if items == nil {
 		items = []shareItem{}
@@ -270,11 +296,17 @@ func printBook(b *projectBook) {
 			l += "（" + p.Role + "）"
 		}
 		l += " — " + effectiveState(p)
+		if p.Stage != "" {
+			l += "・" + p.Stage
+		}
 		if p.Note != "" {
 			l += "：" + p.Note
 		}
 		l += "　最後に動いた " + shortDate(p.LastSeen)
 		fmt.Println(l)
+		if p.Next != "" {
+			fmt.Println("    次: " + nextLabel(p.NextDate, p.Next))
+		}
 		if p.Detail != "" {
 			fmt.Println("    " + p.Detail)
 		}
@@ -365,4 +397,12 @@ func runProjects(rest []string) error {
 		return nil
 	}
 	return fmt.Errorf("projects の使い方が違います: %s", rest[0])
+}
+
+// nextLabel は「11/25 項目を固める打合せ」。日付が無ければ「日付未定」
+func nextLabel(date, text string) string {
+	if date == "" {
+		return "日付未定　" + text
+	}
+	return shortDate(date) + " " + text
 }

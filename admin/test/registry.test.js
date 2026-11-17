@@ -1472,3 +1472,31 @@ test('持ち案件の詳細：受け取って人の並びに渡し、ページ�
   assert.match(card('社内DX'), /<span class="pn">社内DX<\/span><span class="role">リード<\/span><\/div><div class="note">経費精算の見直し<\/div>.*<details><summary>詳細<\/summary><p class="detail">申請から承認までの流れ.*?&quot;来週&quot;の定例で方向を決める<\/p><\/details>/);
   assert.ok(card('採用広報').includes('<div class="note">記事の公開待ち</div>') && !card('採用広報').includes('<details>'), '詳細の無い案件までトグルにしている');
 });
+
+test('段階と次の節目：受け取ってカードにバーと節目を出し、2週間以内の節目を帯に並べる', () => {
+  const env = load();
+  seedDash(env);
+  const k = issue(env, 7); // U4
+  const share = items => call(env, { id: k.i, k: k.k, action: 'share', items });
+  assert.strictEqual(share([{ name: '契約DB', state: '動いている', stage: '完了' }]).error, 'bad_share');
+  assert.strictEqual(share([{ name: '契約DB', state: '動いている', next: 'あ'.repeat(31) }]).error, 'bad_share');
+  assert.strictEqual(share([{ name: '契約DB', state: '動いている', next: '打合せ', next_date: '11/25' }]).error, 'bad_share');
+  assert.ok(share([
+    { name: '契約DB', state: '動いている', stage: '進行中', next: '項目を固める打合せ', next_date: '2026-11-25' },
+    { name: '社内システム運用', state: '期限が過ぎたものあり', stage: '運用中', next: 'DBの停止を止めるか決める', next_date: '2026-11-15' },
+    { name: 'HubSpot導入', state: '動いている', stage: '準備', next: '運用イメージを聞く' },
+    { name: '先の案件', state: '動いている', stage: '準備', next: '来月の打合せ', next_date: '2026-12-20' },
+  ]).ok);
+  const c = dash(env, 'nomtd@example.com').self;
+  assert.deepStrictEqual(c.items.find(i => i.name === '契約DB').next_date, '2026-11-25');
+  const h = loadDashboard(env, { email: 'nomtd@example.com' }).page();
+  const card = n => h.split('<div class="card ').find(x => x.includes('data-name="' + n + '"'));
+  assert.match(card('契約DB'), /data-stage="1" data-next="2026-11-25"/);
+  assert.strictEqual((card('契約DB').match(/<i class="on">/g) || []).length, 2, '進行中までを塗っていない');
+  assert.match(card('契約DB'), /<div class="next">次：<span class="nd">11\/25<\/span>項目を固める打合せ<\/div>/);
+  assert.match(card('社内システム運用'), /<span class="nd late">11\/15<\/span>/, '過ぎた節目が赤くない');
+  assert.match(card('HubSpot導入'), /<span class="nd">日付未定<\/span>運用イメージを聞く/);
+  const strip = h.match(/<div class="strip">([\s\S]*?)<\/div><\/div><div class="sortbar">/)[1];
+  assert.ok(strip.indexOf('社内システム運用') < strip.indexOf('契約DB') && !strip.includes('先の案件') && !strip.includes('HubSpot導入'), strip);
+  assert.ok(h.includes('data-sort="stage"') && h.includes('data-sort="next"'));
+});

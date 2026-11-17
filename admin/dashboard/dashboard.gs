@@ -119,19 +119,60 @@ function rank_(r) { return Math.max(0, Math.min(5, Number(r) || 0)); }
 
 // 案件1つぶんのカード。1行目 案件名と関わり方／2行目 いまの状態の一言／3行目 状態と期限・期間・最後に動いた日。
 // 詳細があればカードの中で開く。並び替えに使う値を data- に持たせる
+var STAGES = ['準備', '進行中', '仕上げ', '運用中'];
+
+// 段階のバー（4つのうち、いまの段階までを塗る）
+function stageHtml_(stage, r) {
+  var at = STAGES.indexOf(stage);
+  if (at < 0) return '';
+  return '<div class="stage"><div class="steps" title="' + esc_(STAGES.join(' → ')) + '">' + STAGES.map(function (s, i) {
+    return '<i' + (i <= at ? ' class="on"' : '') + '></i>';
+  }).join('') + '</div><div class="sl"><b>' + esc_(stage) + '</b><span>' + STATE_LABEL[r] + '</span></div></div>';
+}
+
+// 次の節目（「次：11/25 項目を固める打合せ」）。日付を過ぎていれば赤
+function nextHtml_(o) {
+  if (!o.next) return '';
+  var late = o.next_date && o.today && o.next_date < o.today;
+  var when = o.next_date ? (o.next_date === o.today ? '今日' : md_(o.next_date)) : '日付未定';
+  return '<div class="next">次：<span class="nd' + (late ? ' late' : '') + '">' + esc_(when) + '</span>' + esc_(o.next) + '</div>';
+}
+
 function cardHtml_(o) {
   var r = rank_(o.rank);
+  var stage = stageHtml_(o.stage, r);
   return '<div class="card s' + r + '" data-rank="' + r + '" data-name="' + esc_(o.name) + '" data-role="' + esc_(o.role || '') + '"' +
-    ' data-last="' + esc_(o.last || '') + '" data-due="' + esc_(o.due || '') + '" data-count="' + Number(o.count || 0) + '">' +
+    ' data-last="' + esc_(o.last || '') + '" data-due="' + esc_(o.due || '') + '" data-count="' + Number(o.count || 0) + '"' +
+    ' data-stage="' + (STAGES.indexOf(o.stage) < 0 ? 9 : STAGES.indexOf(o.stage)) + '" data-next="' + esc_(o.next ? o.next_date || '9998' : '9999') + '">' +
     '<div class="ct"><span class="pn">' + esc_(o.name) + '</span>' + (o.role ? '<span class="role">' + esc_(o.role) + '</span>' : '') + '</div>' +
+    stage + nextHtml_(o) +
     (o.note ? '<div class="note">' + esc_(o.note) + '</div>' : '') +
     (o.extra || '') +
-    '<div class="meta">' + esc_([STATE_LABEL[r], o.meta].filter(String).join('・')) + '</div>' +
+    '<div class="meta">' + esc_([stage ? '' : STATE_LABEL[r], o.meta].filter(String).join('・')) + '</div>' +
     (o.detail ? '<details><summary>詳細</summary><p class="detail">' + esc_(o.detail) + '</p></details>' : '') + '</div>';
 }
 
+// これからの節目（期限を過ぎたものと、今日から2週間のもの）を日付順に並べた帯
+function milestonesHtml_(items, today) {
+  var end = addDaysYmd_(today, 14);
+  var list = items.filter(function (it) { return it.next && it.next_date && it.next_date <= end; })
+    .sort(function (a, b) { return a.next_date < b.next_date ? -1 : a.next_date > b.next_date ? 1 : 0; });
+  if (!list.length) return '';
+  return '<div class="strip-wrap"><div class="lbl">これからの節目（2週間）</div><div class="strip">' + list.map(function (it) {
+    var cls = it.next_date < today ? ' late' : it.next_date === today ? ' today' : '';
+    var when = it.next_date === today ? '今日' : md_(it.next_date) + (it.next_date < today ? ' 過ぎている' : '');
+    return '<div class="ms"><div class="d' + cls + '">' + esc_(when) + '</div><div class="x"><b>' + esc_(it.name) + '</b>：' + esc_(it.next) + '</div></div>';
+  }).join('') + '</div></div>';
+}
+
+function addDaysYmd_(ymd, n) {
+  var p = String(ymd).split('-').map(Number);
+  var d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
+  return d.getUTCFullYear() + '-' + ('0' + (d.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + d.getUTCDate()).slice(-2);
+}
+
 var SORTS = {
-  person: [['rank', '状態'], ['last', '最近動いた'], ['role', '関わり方'], ['name', '名前']],
+  person: [['rank', '状態'], ['stage', '段階'], ['next', '次の節目'], ['last', '最近動いた'], ['role', '関わり方'], ['name', '名前']],
   project: [['rank', '状態'], ['due', '次の期限'], ['count', '人数'], ['name', '名前']],
 };
 
@@ -142,17 +183,19 @@ function sortBar_(kind) {
 }
 
 // 1人ぶん。名前・持っている案件の数・気にすべきもの、並び替え、案件のカード
-function personPanel_(c, hidden) {
+function personPanel_(c, hidden, today) {
   var flags = (c.overdue.length ? '<span class="flag f0">期限超過 ' + c.overdue.length + '</span>' : '') +
     (c.waiting.length ? '<span class="flag f1">相手待ち ' + c.waiting.length + '</span>' : '');
   var sub = [(c.team_names || c.teams).join('・'), '持っている案件 ' + c.now + '件' + (c.idle ? '（うちしばらく動きなし ' + c.idle + '件）' : ''),
     c.later ? 'これから ' + c.later + '件' : ''].filter(String).join('・');
   var cards = c.items.map(function (it) {
-    return cardHtml_({ rank: it.rank, name: it.name, role: it.role, note: it.note, meta: it.meta, detail: it.detail, last: it.last });
+    return cardHtml_({ rank: it.rank, name: it.name, role: it.role, note: it.note, meta: it.meta, detail: it.detail, last: it.last,
+      stage: it.stage, next: it.next, next_date: it.next_date, today: today });
   }).join('');
   return '<div class="person" data-person="' + esc_(c.slack_id) + '"' + (hidden ? ' hidden' : '') + '>' +
     '<div class="phead"><h3>' + esc_(c.name) + '</h3><span class="sub">' + esc_(sub) + '</span>' + flags + '</div>' +
     (c.notes ? '<p class="notes">' + esc_(c.notes) + '</p>' : '') +
+    milestonesHtml_(c.items, today) +
     (cards ? sortBar_('person') + '<div class="cards">' + cards + '</div>' : '<p class="notes">見える案件はありません</p>') +
     (c.share_at ? '<p class="foot">ミエタスク ' + md_(c.share_at) + ' ' + hm_(c.share_at) + '時点</p>' : '') + '</div>';
 }
@@ -171,7 +214,7 @@ function membersPanel_(v) {
       ' aria-pressed="' + (i === 0) + '">' + esc_(c.name) + (n ? '<span class="n" title="期限超過">' + n + '</span>' : '') + '</button>';
   }).join('');
   return '<div class="pickbar">' + filter + '<div class="pills">' + pills + '</div></div>' +
-    people.map(function (c, i) { return personPanel_(c, i > 0); }).join('') +
+    people.map(function (c, i) { return personPanel_(c, i > 0, v.today); }).join('') +
     '<p class="lead">気にすべきものがある人から並べています。一言と詳細は各自の Claude が書いたもの（タスクの題名・人の名前は入りません）。</p>';
 }
 
@@ -190,7 +233,7 @@ function projectsPanel_(v) {
 }
 
 function selfPanel_(v) {
-  return '<p class="lead">管理者・役員には、この内容が見えています（自分のチャンネルの「管理者に届く内容」と同じ）。</p>' + personPanel_(v.self, false);
+  return '<p class="lead">管理者・役員には、この内容が見えています（自分のチャンネルの「管理者に届く内容」と同じ）。</p>' + personPanel_(v.self, false, v.today);
 }
 
 function renderPage_(v, want) {
@@ -319,6 +362,8 @@ var CLIENT_JS = `
     role: function (a, b) { return (str(a, 'role') || '\\uffff').localeCompare(str(b, 'role') || '\\uffff', 'ja') || num(a, 'rank') - num(b, 'rank'); },
     last: function (a, b) { return str(b, 'last').localeCompare(str(a, 'last')) || num(a, 'rank') - num(b, 'rank'); },
     due: function (a, b) { return (str(a, 'due') || '9999').localeCompare(str(b, 'due') || '9999') || num(a, 'rank') - num(b, 'rank'); },
+    stage: function (a, b) { return num(a, 'stage') - num(b, 'stage') || num(a, 'rank') - num(b, 'rank'); },
+    next: function (a, b) { return str(a, 'next').localeCompare(str(b, 'next')) || num(a, 'rank') - num(b, 'rank'); },
     count: function (a, b) { return num(b, 'count') - num(a, 'count') || num(a, 'rank') - num(b, 'rank'); },
   };
   document.querySelectorAll('.sortbar').forEach(function (bar) {
@@ -539,6 +584,14 @@ var CSS = [
   '.card details{margin-top:2px}.card summary{cursor:pointer;font-size:12px;color:var(--ink);list-style:none;text-decoration:underline;text-decoration-color:var(--brand);text-decoration-thickness:2px;text-underline-offset:3px;align-self:flex-start}.card summary::-webkit-details-marker{display:none}',
   '.card summary::after{content:" ▾"}.card details[open] summary::after{content:" ▴"}',
   '.detail{margin:4px 0 0;padding:6px 9px;background:var(--soft);border-radius:6px;color:var(--ink);font-size:12.5px;line-height:1.6}',
+  '.stage{display:flex;flex-direction:column;gap:3px;margin:2px 0}.steps{display:flex;gap:3px}.steps i{flex:1;height:5px;border-radius:3px;background:var(--line)}',
+  '.steps i.on{background:var(--brand)}.sl{display:flex;justify-content:space-between;font-size:11px;color:var(--faint)}.sl b{color:var(--ink);font-weight:700}',
+  '.next{font-size:12px;background:var(--soft);border-radius:6px;padding:3px 8px}.nd{font-weight:700;margin-right:6px}.nd.late{color:var(--red)}',
+  '.strip-wrap{margin:10px 0 2px}.strip-wrap .lbl{font-size:12px;color:var(--muted);margin-bottom:6px}',
+  '.strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}.ms{flex:0 0 auto;max-width:240px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 10px}',
+  '.ms .d{font-weight:700;font-size:12px}.ms .d.late{color:var(--red)}.ms .d.today{color:var(--ink);background:var(--brand-soft);display:inline-block;padding:0 6px;border-radius:4px}',
+  '.ms .x{font-size:12px;color:var(--muted)}.ms .x b{color:var(--ink);font-weight:600}',
+
   '.notes{margin:4px 0 0;color:var(--faint);font-size:12px}.foot{margin:10px 0 0;color:var(--faint);font-size:11px}',
   '.empty{color:var(--muted)}',
   '.problems{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:8px 12px;margin:10px 0;font-size:13px}.problems p{margin:2px 0}',
