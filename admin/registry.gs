@@ -41,12 +41,14 @@
  * ■ シート（見出しの名前で列を探すので、列の並べ替えや列の追加をしても壊れない）
  *   メンバー: 名前 / Slack ID / メール / チーム / ロール / 状態 / Notion ユーザー / 投稿先 / 鍵 / 最後に動いた / バージョン / メモ
  *             チームはチームIDをカンマ区切り（例: pm,pm1）。状態は「有効」か「停止」
- *             ロールは メンバー / 管理者 / 役員 / システム管理者 をカンマ区切り（空ならメンバー）
+ *             ロールは メンバー / 役員 / システム管理者 をカンマ区切り（空ならメンバー）。
+ *             管理者はロールではなく「チーム」の管理者欄に書く（以前のロールの管理者は「シートを整える」で移す）
  *             メールは社内の Google アカウント（ダッシュボードはこのメールで見ている人を見分ける）
  *             Notion ユーザーは user://… （管理者の画面が MTD の担当を引くのに使う。空ならメールで探す）
  *             投稿先・鍵・最後に動いた・バージョンは、このスクリプトが書く
- *   チーム:   チームID / 表示名 / 親チーム / メモ
+ *   チーム:   チームID / 表示名 / 親チーム / 管理者 / メモ
  *             親チームに pm と書けば、PM の管理者に PM1 の人も見える（部門 → チームの木にする）
+ *             管理者は Slack ID をカンマ区切り。そのチームと、その下のチームの人が見える（部門長・PM長・リーダー）
  *   日々の状態: 日付 / Slack ID / 名前 / 超過 / 今日 / 今週 / 届いた時刻
  *             各自のミエタスクが毎朝送る件数。このスクリプトが書く。件数のほかは受け取らない
  *   案件の要約: 日付 / Slack ID / 名前 / 要約 / 届いた時刻
@@ -64,7 +66,7 @@ var SHEETS = {
     name: 'メンバー',
     headers: ['名前', 'Slack ID', 'メール', 'チーム', 'ロール', '状態', 'Notion ユーザー', '投稿先', '鍵', '最後に動いた', 'バージョン', 'メモ'],
   },
-  teams: { name: 'チーム', headers: ['チームID', '表示名', '親チーム', 'メモ'] },
+  teams: { name: 'チーム', headers: ['チームID', '表示名', '親チーム', '管理者', 'メモ'] },
   daily: { name: '日々の状態', headers: ['日付', 'Slack ID', '名前', '超過', '今日', '今週', '届いた時刻'] },
   shares: { name: '案件の要約', headers: ['日付', 'Slack ID', '名前', '要約', '届いた時刻'] },
   settings: { name: '設定', headers: ['項目', '値'] },
@@ -77,10 +79,17 @@ var KEY_PREFIX = 'mietask2.';
 var MAX_TEXT = 3900; // Slack は長すぎる本文を黙って切るので、投稿の前に止める
 var STOPPED = '停止';
 // 「メンバー」シートの「ロール」に書くもの（カンマ区切りで重ねられる。空ならメンバー）
-var ROLE_MANAGER = '管理者'; // 自分の「チーム」のチームと、その下のチームの人が見える（リーダー・部門長）
+var ROLE_MANAGER = '管理者'; // 以前のロール。いまは「チーム」の管理者欄に書く（移す前の台帳のためだけに読む）
 var ROLE_EXEC = '役員'; // 全員が見える
 var ROLE_SYSADMIN = 'システム管理者'; // 全員の動作状況が見える（案件の中身は見えない）
 var ROLE_NAMES = ['メンバー', ROLE_MANAGER, ROLE_EXEC, ROLE_SYSADMIN];
+
+// 管理者を「チーム」の管理者欄に移したか（メニュー「シートを整える」で移す）。
+// 移す前は管理者欄を読まない（以前の管理者列の古い値が残っていても、見える範囲に効かないように）
+function managersOnTeams_() { return PropertiesService.getScriptProperties().getProperty('MANAGERS_ON_TEAMS') === '1'; }
+
+// 書けるロール。移したあとは、ロールに管理者は書かない
+function roleNames_() { return managersOnTeams_() ? ['メンバー', ROLE_EXEC, ROLE_SYSADMIN] : ROLE_NAMES; }
 
 // ================================================================ ウェブアプリ（メンバーの mietask から）
 
@@ -288,8 +297,9 @@ function publicMember_(m) {
 }
 
 function allTeams_(ss) {
+  var on = managersOnTeams_();
   return rows_(ss, SHEETS.teams).map(function (r) {
-    return { id: r['チームID'], name: r['表示名'], parent: r['親チーム'] };
+    return { id: r['チームID'], name: r['表示名'], parent: r['親チーム'], managers: on ? list_(r['管理者']) : [] };
   }).filter(function (t) { return t.id; });
 }
 
@@ -324,9 +334,12 @@ function hasRole_(m, role) { return !!m && (m.roles || []).indexOf(role) >= 0; }
 
 function isSystemAdmin_(m) { return hasRole_(m, ROLE_SYSADMIN); }
 
-// 案件の中身が見えるチームの起点。役員は一番上のチーム全部、管理者は自分の「チーム」のチーム（どちらも下のチームを含む）
+// 案件の中身が見えるチームの起点。役員は一番上のチーム全部、管理者は管理者欄に自分がいるチーム（どちらも下のチームを含む）。
+// 管理者欄に移す前の台帳では、以前どおり「管理者のロール ＋ 自分の『チーム』」で決める
 function scopeRoots_(teams, m) {
+  if (!m) return [];
   if (hasRole_(m, ROLE_EXEC)) return teams.filter(function (t) { return !t.parent || !teamById_(teams, t.parent); });
+  if (managersOnTeams_()) return teams.filter(function (t) { return t.managers.indexOf(m.slack_id) >= 0; });
   if (hasRole_(m, ROLE_MANAGER)) return m.teams.map(function (id) { return teamById_(teams, id) || { id: id, name: id, parent: '' }; });
   return [];
 }
@@ -805,38 +818,63 @@ function setupSheets() {
     if (!(k in have)) settings.appendRow([k, defaults[k]]);
   });
   var notes = migrateRoles_(ss);
-  return 'シートを整えました。' + (notes.length ? '\n\nロールを移しました（以前の「チーム」の管理者列・「設定」の system_admins から）:\n' + notes.join('\n') : '');
+  var moved = migrateManagers_(ss);
+  return 'シートを整えました。' + (notes.length ? '\n\nロールを移しました（以前の「設定」の system_admins から）:\n' + notes.join('\n') : '') +
+    (moved.length ? '\n\n管理者を「チーム」の管理者欄に移しました:\n' + moved.join('\n') : '');
 }
 
-// 以前は「チーム」シートの管理者列と「設定」の system_admins で決めていた。ロールが空の人にだけ、そこから移す。
-// 古い列・項目は消さない（見比べられるように。もう読まないので、確かめたら消してよい）
+// 以前は「設定」の system_admins で決めていた。ロールが空の人にだけ、そこから移す。
+// 古い項目は消さない（見比べられるように。もう読まないので、確かめたら消してよい）
 function migrateRoles_(ss) {
-  var legacy = {};
-  rows_(ss, SHEETS.teams).forEach(function (r) {
-    list_(r['管理者']).forEach(function (u) { (legacy[u] = legacy[u] || []).push(r['チームID']); });
-  });
   var sys = list_(settings_(ss).system_admins);
   var notes = [], found = {};
   rows_(ss, SHEETS.members).forEach(function (r, i) {
     var id = r['Slack ID'];
     if (!id) return;
     found[id] = true;
-    if (r['ロール']) return;
-    var roles = [];
-    if (legacy[id]) {
-      roles.push(ROLE_MANAGER);
-      var mine = list_(r['チーム']).map(function (t) { return t.toLowerCase(); });
-      var missing = legacy[id].filter(function (t) { return mine.indexOf(String(t).toLowerCase()) < 0; });
-      if (missing.length) notes.push('・' + r['名前'] + '：管理していた ' + missing.join('、') + ' が「チーム」に入っていません。見えるようにするなら「チーム」に足してください');
-    }
-    if (sys.indexOf(id) >= 0) roles.push(ROLE_SYSADMIN);
-    if (!roles.length) return;
-    setCell_(ss, SHEETS.members, i + 2, 'ロール', roles.join(', '));
-    notes.push('・' + r['名前'] + '：' + roles.join(', '));
+    if (r['ロール'] || sys.indexOf(id) < 0) return;
+    setCell_(ss, SHEETS.members, i + 2, 'ロール', ROLE_SYSADMIN);
+    notes.push('・' + r['名前'] + '：' + ROLE_SYSADMIN);
   });
-  Object.keys(legacy).concat(sys).forEach(function (u) {
+  sys.forEach(function (u) {
     if (!found[u]) { found[u] = true; notes.push('・' + u + '：「メンバー」に行がありません。ページを見せるなら、メール付きで行を足してロールを入れてください'); }
   });
+  return notes;
+}
+
+// 管理者を、ロールから「チーム」の管理者欄に移す（1回だけ）。管理者のロールの人を、その人の「チーム」の管理者にして、
+// ロールから管理者を外す。管理者欄に以前の値が残っていても使わず、ここで書き直す
+function migrateManagers_(ss) {
+  if (managersOnTeams_()) return [];
+  var members = rows_(ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); }).filter(function (m) { return m.slack_id; });
+  var teamRows = rows_(ss, SHEETS.teams);
+  var known = {};
+  teamRows.forEach(function (r) { if (r['チームID']) known[String(r['チームID']).toLowerCase()] = true; });
+  var notes = [], byTeam = {};
+  members.forEach(function (m) {
+    if (!hasRole_(m, ROLE_MANAGER)) return;
+    if (!m.teams.length) notes.push('・' + m.name + '：管理者のロールでしたが「チーム」が空なので、どのチームの管理者にもしていません');
+    m.teams.forEach(function (t) {
+      var k = String(t).toLowerCase();
+      if (!known[k]) { notes.push('・' + m.name + '：チーム「' + t + '」が「チーム」シートに無いので、管理者にしていません'); return; }
+      (byTeam[k] = byTeam[k] || []).push(m);
+    });
+  });
+  teamRows.forEach(function (r, i) {
+    if (!r['チームID']) return;
+    var ms = byTeam[String(r['チームID']).toLowerCase()] || [];
+    var value = ms.map(function (m) { return m.slack_id; }).join(', ');
+    var old = String(r['管理者'] || '').trim();
+    if (value === old) return;
+    setCell_(ss, SHEETS.teams, i + 2, '管理者', value);
+    notes.push('・チーム ' + r['チームID'] + '：' + (ms.length ? ms.map(function (m) { return m.name; }).join('、') + ' を管理者に' : '管理者を空に') +
+      (old ? '（前の値「' + old + '」は使いません）' : ''));
+  });
+  members.forEach(function (m) {
+    if (!hasRole_(m, ROLE_MANAGER)) return;
+    setCell_(ss, SHEETS.members, m.row, 'ロール', m.roles.filter(function (r) { return r !== ROLE_MANAGER; }).join(', '));
+  });
+  PropertiesService.getScriptProperties().setProperty('MANAGERS_ON_TEAMS', '1');
   return notes;
 }
 
@@ -1443,8 +1481,9 @@ function card_(ctx, m) {
 function adminData_(ss, today) {
   return {
     health: healthView_(ss, latestShares_(ss), today),
-    teams: allTeams_(ss).map(function (t) { return { id: t.id, name: t.name || '', parent: t.parent || '' }; }),
-    roles: ROLE_NAMES.slice(1),
+    teams: allTeams_(ss).map(function (t) { return { id: t.id, name: t.name || '', parent: t.parent || '', managers: t.managers }; }),
+    roles: roleNames_().slice(1),
+    managers_on_teams: managersOnTeams_(), // 移す前は、管理者をロールで付ける（チームの画面では選べない）
     aliases: rows_(ss, SHEETS.aliases).filter(function (r) { return r['別名'] && r['案件名']; })
       .map(function (r) { return { alias: r['別名'], name: r['案件名'] }; }),
     log: rows_(ss, SHEETS.changes).slice(-30).reverse(), // 直近の変更（新しい順）
@@ -1475,12 +1514,12 @@ function healthPage_(ss, email, today, change) {
 // ---------------------------------------------------------------- 台帳の変更（システム管理者がページから）
 //
 // 台帳はスプレッドシートのままが正。ページから変えられるのは、見える範囲を決める項目だけ
-// （メンバーのチーム・ロール・状態・メール、チームの追加・表示名・親チーム）。
+// （メンバーのチーム・ロール・状態・メール、チームの追加・表示名・親チーム・管理者）。
 // ページを開いたあとにシートが直に直されていたら、上書きせずに断る（base と今の値を比べる）。
 // 変えたものは「変更の記録」に残す。
 
 var MEMBER_FIELDS = { name: '名前', teams: 'チーム', roles: 'ロール', status: '状態', email: 'メール', notion_user: 'Notion ユーザー' };
-var TEAM_FIELDS = { name: '表示名', parent: '親チーム' };
+var TEAM_FIELDS = { name: '表示名', parent: '親チーム', managers: '管理者' };
 
 function changeError_(message) { return relayError_('bad_change', message); }
 
@@ -1504,8 +1543,8 @@ function applyChange_(ss, viewer, change) {
     else if (kind === 'add_member') log = addMember_(ss, change, notes);
     else if (kind === 'send_key') log = sendKeyFromPage_(ss, change, notes);
     else if (kind === 'revoke_key') log = revokeKeyFromPage_(ss, change, notes);
-    else if (kind === 'team') log = changeTeam_(ss, change);
-    else if (kind === 'add_team') log = addTeam_(ss, change);
+    else if (kind === 'team') log = changeTeam_(ss, change, notes);
+    else if (kind === 'add_team') log = addTeam_(ss, change, notes);
     else if (kind === 'merge') log = mergeProject_(ss, change);
     else if (kind === 'unmerge') log = unmergeProject_(ss, change);
     else throw changeError_('不明な変更です: ' + kind);
@@ -1651,7 +1690,10 @@ function checkTeams_(teams, v) {
 
 function checkRoles_(v) {
   var roles = (Array.isArray(v) ? v : []).map(function (r) { return String(r).trim(); }).filter(function (r) { return r && r !== 'メンバー'; });
-  roles.forEach(function (r) { if (ROLE_NAMES.indexOf(r) < 0) throw changeError_('ロール「' + r + '」は使えません'); });
+  roles.forEach(function (r) {
+    if (r === ROLE_MANAGER && managersOnTeams_()) throw changeError_('管理者はロールではなく、「チーム」の管理者で決めます');
+    if (roleNames_().indexOf(r) < 0) throw changeError_('ロール「' + r + '」は使えません');
+  });
   return uniq_(roles);
 }
 
@@ -1687,32 +1729,66 @@ function notifyViewer_(m, roles, notes) {
   notes.push(r.ok ? m.name + ' さんにページの案内を DM で送りました' : m.name + ' さんに案内の DM を送れませんでした（' + r.error + '）');
 }
 
-function changeTeam_(ss, change) {
+function changeTeam_(ss, change, notes) {
   var rows = rows_(ss, SHEETS.teams);
   var teams = allTeams_(ss);
   var idx = -1;
   for (var i = 0; i < rows.length; i++) if (String(rows[i]['チームID']).toLowerCase() === String(change.id || '').toLowerCase() && rows[i]['チームID']) { idx = i; break; }
   if (idx < 0) throw changeError_('そのチームは「チーム」シートにありません');
   var id = rows[idx]['チームID'];
-  var now = { name: rows[idx]['表示名'] || '', parent: rows[idx]['親チーム'] || '' };
+  var now = { name: rows[idx]['表示名'] || '', parent: rows[idx]['親チーム'] || '', managers: managersOnTeams_() ? list_(rows[idx]['管理者']) : [] };
   var set = change.set || {}, base = change.base || {};
   var next = {};
   Object.keys(set).forEach(function (k) {
     if (!TEAM_FIELDS[k]) throw changeError_('変えられない項目です: ' + k);
-    if (String(now[k]) !== String(base[k] === undefined ? '' : base[k])) {
-      throw relayError_('conflict', 'チーム ' + id + ' の' + TEAM_FIELDS[k] + 'は、ページを開いたあとに変わっています。ページを開き直してください');
-    }
+    var same = k === 'managers' ? sameList_(now.managers, base.managers || [])
+      : String(now[k]) === String(base[k] === undefined ? '' : base[k]);
+    if (!same) throw relayError_('conflict', 'チーム ' + id + ' の' + TEAM_FIELDS[k] + 'は、ページを開いたあとに変わっています。ページを開き直してください');
   });
   if ('name' in set) next.name = plainText_(set.name, '表示名');
   if ('parent' in set) next.parent = checkParent_(teams, id, set.parent);
+  if ('managers' in set) next.managers = checkManagers_(ss, set.managers);
+  var who = managerNames_(ss);
   var fields = {}, log = [];
   Object.keys(next).forEach(function (k) {
-    if (now[k] === next[k]) return;
-    fields[TEAM_FIELDS[k]] = next[k];
-    log.push(['チーム ' + id, TEAM_FIELDS[k], now[k], next[k]]);
+    var before = k === 'managers' ? who(now.managers) : now[k];
+    var after = k === 'managers' ? who(next.managers) : next[k];
+    if (k === 'managers' ? sameList_(now.managers, next.managers) : now[k] === next[k]) return;
+    fields[TEAM_FIELDS[k]] = k === 'managers' ? next.managers.join(', ') : next[k];
+    log.push(['チーム ' + id, TEAM_FIELDS[k], before, after]);
   });
   if (log.length) writeCells_(ss, SHEETS.teams, idx + 2, fields);
+  if (next.managers) notifyManagers_(ss, next.managers.filter(function (u) { return now.managers.indexOf(u) < 0; }), rows[idx]['表示名'] || id, notes);
   return log;
+}
+
+// 管理者に選べるのは、台帳にいて停止していない人だけ。管理者欄に移す前は選べない
+function checkManagers_(ss, v) {
+  if (!managersOnTeams_()) throw changeError_('管理者を選ぶ前に、台帳のメニュー「シートを整える」を1回押してください（管理者を「チーム」に移します）');
+  var ids = uniq_((Array.isArray(v) ? v : list_(v)).map(function (x) { return String(x).trim(); }).filter(String));
+  var members = rows_(ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); });
+  ids.forEach(function (u) {
+    var m = members.filter(function (x) { return x.slack_id === u; })[0];
+    if (!m) throw changeError_('管理者「' + u + '」は台帳にいません');
+    if (m.status === STOPPED) throw changeError_(m.name + ' さんは停止しているので、管理者にできません');
+  });
+  return ids;
+}
+
+// Slack ID の並びを、記録に残す名前の並びにする（台帳にいない ID はそのまま）
+function managerNames_(ss) {
+  var name = {};
+  rows_(ss, SHEETS.members).forEach(function (r) { if (r['Slack ID']) name[r['Slack ID']] = r['名前']; });
+  return function (ids) { return ids.map(function (u) { return name[u] || u; }).join(', '); };
+}
+
+// 新しく管理者になった人に、ページの場所を DM で知らせる
+function notifyManagers_(ss, ids, teamName, notes) {
+  var members = rows_(ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); });
+  ids.forEach(function (u) {
+    var m = members.filter(function (x) { return x.slack_id === u; })[0];
+    if (m) notifyViewer_({ name: m.name, slack_id: m.slack_id }, [teamName + ' の管理者'], notes);
+  });
 }
 
 // 親チームはあるチームだけ。自分や自分の下のチームを親にして輪にしない
@@ -1727,18 +1803,21 @@ function checkParent_(teams, id, raw) {
   return t.id;
 }
 
-function addTeam_(ss, change) {
+function addTeam_(ss, change, notes) {
   var teams = allTeams_(ss);
   var id = String(change.id || '').trim();
   if (!/^[A-Za-z0-9_-]{1,30}$/.test(id) || /^[-]/.test(id)) throw changeError_('チームIDは英数字・- ・_ で30文字まで（先頭に - は使えません）');
   if (teamById_(teams, id)) throw changeError_('チーム ' + id + ' はもうあります');
   var name = plainText_(change.name, '表示名') || id;
   var parent = checkParent_(teams, '', change.parent);
+  var managers = (change.managers || []).length ? checkManagers_(ss, change.managers) : [];
   var sh = sheet_(ss, SHEETS.teams);
   var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  var row = { 'チームID': id, '表示名': name, '親チーム': parent };
+  var row = { 'チームID': id, '表示名': name, '親チーム': parent, '管理者': managers.join(', ') };
   sh.appendRow(head.map(function (h) { return row[String(h).trim()] || ''; }));
-  return [['チーム ' + id, '追加', '', '表示名: ' + name + (parent ? '・親チーム: ' + parent : '')]];
+  if (managers.length) notifyManagers_(ss, managers, name, notes || []);
+  return [['チーム ' + id, '追加', '', '表示名: ' + name + (parent ? '・親チーム: ' + parent : '') +
+    (managers.length ? '・管理者: ' + managerNames_(ss)(managers) : '')]];
 }
 
 // 案件の名前は要約と同じ決まりで受け取る（ダッシュボードにそのまま出るため）
@@ -1807,10 +1886,13 @@ function healthView_(ss, shares, today) {
     .filter(function (m) { return m.slack_id; })
     .map(function (m) {
       var issues = [];
-      m.roles.forEach(function (x) { if (ROLE_NAMES.indexOf(x) < 0) issues.push('ロール「' + x + '」は使えません'); });
+      m.roles.forEach(function (x) {
+        if (x === ROLE_MANAGER && managersOnTeams_()) issues.push('ロールの「管理者」は使っていません（管理者は「チーム」の管理者で決めます）');
+        else if (roleNames_().indexOf(x) < 0) issues.push('ロール「' + x + '」は使えません');
+      });
       m.teams.forEach(function (t) { if (!teamById_(teams, t)) issues.push('チーム「' + t + '」が「チーム」シートにありません'); });
       if (!m.email) issues.push('メールが空です（ダッシュボードを開けません）');
-      if (hasRole_(m, ROLE_MANAGER) && !m.teams.length) issues.push('管理者ですがチームが空です');
+      if (!managersOnTeams_() && hasRole_(m, ROLE_MANAGER) && !m.teams.length) issues.push('管理者ですがチームが空です');
       // 一目で分かる動き具合（3日より前から動いていなければ、毎朝の実行が止まっているかもしれない）
       var state = m.status === STOPPED ? '停止' : /^無効/.test(m.key) ? '鍵を無効にした' : !m.key ? '鍵なし'
         : !m.last_run ? 'セットアップ待ち' : today && String(m.last_run).slice(0, 10) < addDays_(today, -3) ? '止まっているかも' : '動いている';
