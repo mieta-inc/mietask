@@ -112,8 +112,9 @@ function hm_(iso) {
 
 function rank_(r) { return Math.max(0, Math.min(5, Number(r) || 0)); }
 
-// 1人ぶん。名前・持っている案件の数・気にすべきもの、その下に案件ごとの1行（関わり方・いまの状態の一言・最後に動いた日など）。
-// 表にはしない（長い案件名が変なところで折り返さないよう、1行を文章のように流す）
+// 1人ぶん。名前・持っている案件の数・気にすべきもの、その下に案件ごと：
+//   1行目 案件名・関わり方（と最後に動いた日など）／2行目 いまの状態の一言／詳細があればトグルで開く2〜3行。
+// 表にはしない（長い案件名が変な位置で折り返さないよう、文章のように流す）
 function personHtml_(c, teamsOf) {
   var flags = (c.overdue.length ? '<span class="flag f0">期限超過 ' + c.overdue.length + '</span>' : '') +
     (c.waiting.length ? '<span class="flag f1">相手待ち ' + c.waiting.length + '</span>' : '');
@@ -121,11 +122,12 @@ function personHtml_(c, teamsOf) {
     c.later ? 'これから ' + c.later + '件' : ''].filter(String).join('・');
   var items = c.items.map(function (it) {
     var r = rank_(it.rank);
-    var tail = [it.note || (it.meta ? '' : STATE_LABEL[r])].filter(String);
-    return '<li class="r' + r + '"><span class="dot d' + r + '" title="' + STATE_LABEL[r] + '"></span><span class="pn">' + esc_(it.name) + '</span>' +
-      (it.role ? '<span class="role">' + esc_(it.role) + '</span>' : '') +
-      (tail.length ? '<span class="pd">' + esc_(tail[0]) + '</span>' : '') +
-      (it.meta ? '<span class="meta">' + esc_(it.meta) + '</span>' : '') + '</li>';
+    var head = '<div class="l1"><span class="dot d' + r + '" title="' + STATE_LABEL[r] + '"></span><span class="pn">' + esc_(it.name) + '</span>' +
+      (it.role ? '<span class="role">' + esc_(it.role) + '</span>' : '') + (it.meta ? '<span class="meta">' + esc_(it.meta) + '</span>' : '') + '</div>' +
+      '<div class="l2">' + esc_(it.note || STATE_LABEL[r]) + '</div>';
+    return '<li class="r' + r + '">' + (it.detail
+      ? '<details><summary>' + head + '</summary><p class="detail">' + esc_(it.detail) + '</p></details>'
+      : head) + '</li>';
   }).join('');
   return '<article class="person" data-teams=" ' + esc_((teamsOf || []).join(' ')) + ' ">' +
     '<header><h3>' + esc_(c.name) + '</h3><span class="sub">' + esc_(sub) + '</span>' + flags + '</header>' +
@@ -460,9 +462,14 @@ var CSS = [
   '.person{padding:14px 0;border-top:1px solid var(--line)}.person:first-child{border-top:0}',
   '.person header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.person h3{margin:0;font-size:15px;font-weight:600}.sub{color:var(--faint);font-size:12px}',
   '.flag{font-size:12px;padding:1px 8px;border-radius:999px}.f0{background:var(--red-bg);color:var(--red)}.f1{background:var(--amber-bg);color:var(--amber)}',
-  '.items{list-style:none;margin:8px 0 0;padding:0;font-size:13px}.items li{padding:3px 0 3px 14px;text-indent:-14px;line-height:1.55}',
-  '.items li.r4 .pn,.items li.r4 .pd{color:var(--faint)}',
+  '.items{list-style:none;margin:8px 0 0;padding:0;font-size:13px}.items li{padding:5px 0;line-height:1.55}',
+  '.items .l2{color:var(--muted);margin-left:14px;overflow-wrap:anywhere}.items li.r4 .pn,.items li.r4 .l2{color:var(--faint)}',
+  '.items summary{list-style:none;cursor:pointer;position:relative;padding-right:18px}.items summary::-webkit-details-marker{display:none}',
+  '.items summary::after{content:"詳細";position:absolute;right:0;top:0;font-size:11px;color:var(--accent)}',
+  '.items details[open] summary::after{content:"閉じる"}.items summary:hover .pn{text-decoration:underline}',
+  '.detail{margin:4px 0 2px 14px;padding:6px 10px;background:var(--soft);border-radius:6px;color:var(--ink);font-size:12.5px;line-height:1.6}',
   '.pn{font-weight:500;overflow-wrap:anywhere}.pd{color:var(--muted);margin-left:10px;overflow-wrap:anywhere}',
+
   '.role{color:var(--faint);font-size:12px;margin-left:6px}.meta{color:var(--faint);font-size:12px;margin-left:10px}',
   '.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px;background:var(--line);text-indent:0}',
   '.d0{background:var(--red)}.d1{background:var(--amber)}.d2{background:var(--faint)}.d3{background:var(--line)}.d4{background:transparent;border:1px solid var(--faint)}.d5{background:var(--blue)}',

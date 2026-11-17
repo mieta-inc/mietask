@@ -29,6 +29,7 @@ type shareItem struct {
 	State    string `json:"state"`
 	Due      string `json:"due,omitempty"`
 	Note     string `json:"note,omitempty"`      // いま何をしているかの一言（題名・人の名前は入れない）
+	Detail   string `json:"detail,omitempty"`    // 詳細（2〜3行。持ち案件の台帳から）
 	Role     string `json:"role,omitempty"`      // 関わり方（リード・担当・手伝い など）
 	LastSeen string `json:"last_seen,omitempty"` // 最後に動いた日（持ち案件の台帳から）
 	Open     *int   `json:"open,omitempty"`      // まとまりの中で、まだ終わっていないタスクの数
@@ -80,6 +81,8 @@ func loadShare(path string) ([]shareItem, error) {
 		role, _ := it["role"].(string)
 		role = strings.TrimSpace(role)
 		last, _ := it["last_seen"].(string)
+		detail, _ := it["detail"].(string)
+		detail = strings.TrimSpace(detail)
 		switch {
 		case name == "":
 			return nil, fmt.Errorf("%s の案件名が空です", where)
@@ -100,6 +103,9 @@ func loadShare(path string) ([]shareItem, error) {
 		case last != "" && !reYMD.MatchString(last):
 			return nil, fmt.Errorf("%s の最後に動いた日は yyyy-mm-dd で書きます（%q になっています）", where, last)
 		}
+		if err := checkProjectText(where, "詳細", detail, projectDetail); err != nil {
+			return nil, err
+		}
 		open, err := shareCount(it, "open", where+" の残りの件数（open）")
 		if err != nil {
 			return nil, err
@@ -111,7 +117,7 @@ func loadShare(path string) ([]shareItem, error) {
 		if open != nil && overdue != nil && *overdue > *open {
 			return nil, fmt.Errorf("%s の超過の件数（%d）が残りの件数（%d）より多くなっています", where, *overdue, *open)
 		}
-		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Role: role, LastSeen: last, Open: open, Overdue: overdue})
+		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Detail: detail, Role: role, LastSeen: last, Open: open, Overdue: overdue})
 	}
 	return out, nil
 }
@@ -185,6 +191,9 @@ func sharePreview(items []shareItem) string {
 		}
 		if it.LastSeen != "" && it.LastSeen != ymd(todayJST()) {
 			l += "（最後に動いた " + shortDate(it.LastSeen) + "）"
+		}
+		if it.Detail != "" {
+			l += "\n　　" + it.Detail
 		}
 
 		lines = append(lines, l)
@@ -296,7 +305,8 @@ func withSharePreview(payloadPath string, items []shareItem) (string, error) {
 		return "", &PostError{payloadPath + " のトップレベルはオブジェクトである必要があります。"}
 	}
 	replies, _ := getDefault(data, "replies", []any{}).([]any)
-	data.Set("replies", append(append([]any{}, replies...), sharePreview(items)))
+	data.Set("replies", append(append([]any{}, replies...), splitPreview(sharePreview(items))...))
+
 	dir, err := tmpDir()
 	if err != nil {
 		return "", err
@@ -319,4 +329,25 @@ func cmdShareProjects(dryRun bool) error {
 		fmt.Println(sharePreview(items))
 	}
 	return sendShare(items, dryRun)
+}
+
+// splitPreview は「管理者に届く内容」が1通に収まらないとき、行の切れ目で複数の子スレッドに分ける
+// （詳細を書くと案件が多い人は Slack の1通の上限を超えるため）。
+func splitPreview(text string) []any {
+	const limit = 3500
+	var out []any
+	cur := ""
+	for _, line := range strings.Split(text, "\n") {
+		// 詳細の行（全角の字下げで始まる）は、その案件の行と切り離さない
+		if cur != "" && utf8.RuneCountInString(cur)+utf8.RuneCountInString(line)+1 > limit && !strings.HasPrefix(line, "　　") {
+			out = append(out, cur)
+			cur = ":eyes: *管理者に届く内容*（続き）"
+		}
+		if cur == "" {
+			cur = line
+		} else {
+			cur += "\n" + line
+		}
+	}
+	return append(out, cur)
 }

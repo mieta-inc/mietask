@@ -444,6 +444,7 @@ var SHARE_MAX = 40; // 持ち案件の一覧（横断の仕事の多い人は数
 var SHARE_FRESH_DAYS = 7; // 持ち案件の一覧は、この日数のあいだは最新として出す（朝の実行が1日抜けても消さない）
 var HINT_MAX = 80;
 var NOTE_MAX = 40; // 案件ごとの「いま何をしているか」の一言
+var DETAIL_MAX = 150; // 案件ごとの詳細（ページではトグルで開く2〜3行）
 
 // 件数（残り・超過）。書かれていなければ null（古い版のミエタスクは件数を送らない）
 function shareCount_(v, label) {
@@ -478,6 +479,10 @@ function cleanShare_(raw) {
     if (note.length > NOTE_MAX) throw relayError_('bad_share', where + ' の一言が長すぎます（' + NOTE_MAX + '文字まで）');
     if (/[\r\n<>@]|https?:/i.test(note)) throw relayError_('bad_share', where + ' の一言に改行・リンク・メンション・メールアドレスは入れられません');
     if (note) out.note = note;
+    var detail = String(it.detail || '').trim();
+    if (detail.length > DETAIL_MAX) throw relayError_('bad_share', where + ' の詳細が長すぎます（' + DETAIL_MAX + '文字まで）');
+    if (/[\r\n<>@]|https?:/i.test(detail)) throw relayError_('bad_share', where + ' の詳細に改行・リンク・メンション・メールアドレスは入れられません');
+    if (detail) out.detail = detail;
     var open = shareCount_(it.open, where + ' の残りの件数（open）');
     var overdue = shareCount_(it.overdue, where + ' の超過の件数（overdue）');
     if (open !== null) out.open = open;
@@ -1155,7 +1160,7 @@ function memberEntries_(st, sh, today) {
       var rank = it.state in SHARE_RANK ? SHARE_RANK[it.state] : RANK.running;
       out.push({ name: it.name, src: 'share', rank: rank, due: it.due || '', roles: it.role ? [it.role] : [], start: '', end: '',
         open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [], note: it.note || '',
-        last_seen: it.last_seen || '' });
+        detail: it.detail || '', last_seen: it.last_seen || '' });
     });
   }
   return out;
@@ -1180,6 +1185,7 @@ function personItems_(entries, resolve, today) {
     var last = sh.map(function (e) { return e.last_seen; }).filter(String).sort().reverse()[0] || '';
     var note = sh.map(function (e) { return e.note; }).filter(String)[0] || mtd.map(function (e) { return e.note; }).filter(String)[0] || '';
     if (!note && sh.length) note = SHARE_WORD[Math.min.apply(null, sh.map(function (e) { return e.rank; }))] || '';
+    var detail = sh.map(function (e) { return e.detail; }).filter(String)[0] || '';
     var dues = list.map(function (e) { return e.due; }).filter(String).sort();
     var start = mtd.map(function (e) { return e.start; }).filter(String).sort()[0] || '';
     var end = mtd.map(function (e) { return e.end; }).filter(String).sort().reverse()[0] || '';
@@ -1189,7 +1195,7 @@ function personItems_(entries, resolve, today) {
     var meta = [count, dues[0] ? '次の期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '',
       last && last < today ? '最後に動いた ' + dateLabel_(last, today) : ''].filter(String).join('・');
     return { name: g.name, rank: rank, role: roles.join('・'), src: g.mtd && g.share ? 'both' : g.mtd ? 'mtd' : 'share',
-      note: note, meta: meta, start: start, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
+      note: note, detail: detail, meta: meta, start: start, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
   });
   return sortByRank_(items);
 }
@@ -1210,7 +1216,12 @@ function personCard_(base, entries, resolve, today) {
   var pick = function (f) { return items.filter(f).map(function (it) { return it.name; }); };
   return {
     slack_id: base.slack_id, name: base.name, teams: base.teams, notes: base.notes, share_at: base.share_at,
-    items: items.map(function (it) { return { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta }; }),
+    items: items.map(function (it) {
+      var o = { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta };
+      if (it.detail) o.detail = it.detail;
+      return o;
+    }),
+
     now: items.filter(function (it) { return it.rank !== RANK.starting; }).length,
     later: items.filter(function (it) { return it.rank === RANK.starting; }).length,
     idle: items.filter(function (it) { return it.rank === RANK.idle; }).length,
