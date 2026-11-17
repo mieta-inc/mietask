@@ -112,60 +112,80 @@ function hm_(iso) {
 
 function rank_(r) { return Math.max(0, Math.min(5, Number(r) || 0)); }
 
-// 1人ぶん。名前・持っている案件の数・気にすべきもの、その下に案件ごと：
-//   1行目 案件名・関わり方（と最後に動いた日など）／2行目 いまの状態の一言／詳細があればトグルで開く2〜3行。
-// 表にはしない（長い案件名が変な位置で折り返さないよう、文章のように流す）
-function personHtml_(c, teamsOf) {
+// 案件1つぶんのカード。1行目 案件名と関わり方／2行目 いまの状態の一言／3行目 状態と期限・期間・最後に動いた日。
+// 詳細があればカードの中で開く。並び替えに使う値を data- に持たせる
+function cardHtml_(o) {
+  var r = rank_(o.rank);
+  return '<div class="card s' + r + '" data-rank="' + r + '" data-name="' + esc_(o.name) + '" data-role="' + esc_(o.role || '') + '"' +
+    ' data-last="' + esc_(o.last || '') + '" data-due="' + esc_(o.due || '') + '" data-count="' + Number(o.count || 0) + '">' +
+    '<div class="ct"><span class="pn">' + esc_(o.name) + '</span>' + (o.role ? '<span class="role">' + esc_(o.role) + '</span>' : '') + '</div>' +
+    (o.note ? '<div class="note">' + esc_(o.note) + '</div>' : '') +
+    (o.extra || '') +
+    '<div class="meta">' + esc_([STATE_LABEL[r], o.meta].filter(String).join('・')) + '</div>' +
+    (o.detail ? '<details><summary>詳細</summary><p class="detail">' + esc_(o.detail) + '</p></details>' : '') + '</div>';
+}
+
+var SORTS = {
+  person: [['rank', '状態'], ['last', '最近動いた'], ['role', '関わり方'], ['name', '名前']],
+  project: [['rank', '状態'], ['due', '次の期限'], ['count', '人数'], ['name', '名前']],
+};
+
+function sortBar_(kind) {
+  return '<div class="sortbar"><span class="lbl">並び</span><div class="seg">' + SORTS[kind].map(function (s, i) {
+    return '<button type="button" data-sort="' + s[0] + '" aria-pressed="' + (i === 0) + '">' + s[1] + '</button>';
+  }).join('') + '</div></div>';
+}
+
+// 1人ぶん。名前・持っている案件の数・気にすべきもの、並び替え、案件のカード
+function personPanel_(c, hidden) {
   var flags = (c.overdue.length ? '<span class="flag f0">期限超過 ' + c.overdue.length + '</span>' : '') +
     (c.waiting.length ? '<span class="flag f1">相手待ち ' + c.waiting.length + '</span>' : '');
   var sub = [(c.team_names || c.teams).join('・'), '持っている案件 ' + c.now + '件' + (c.idle ? '（うちしばらく動きなし ' + c.idle + '件）' : ''),
     c.later ? 'これから ' + c.later + '件' : ''].filter(String).join('・');
-  var items = c.items.map(function (it) {
-    var r = rank_(it.rank);
-    var head = '<div class="l1"><span class="dot d' + r + '" title="' + STATE_LABEL[r] + '"></span><span class="pn">' + esc_(it.name) + '</span>' +
-      (it.role ? '<span class="role">' + esc_(it.role) + '</span>' : '') + (it.meta ? '<span class="meta">' + esc_(it.meta) + '</span>' : '') + '</div>' +
-      '<div class="l2">' + esc_(it.note || STATE_LABEL[r]) + '</div>';
-    return '<li class="r' + r + '">' + (it.detail
-      ? '<details><summary>' + head + '</summary><p class="detail">' + esc_(it.detail) + '</p></details>'
-      : head) + '</li>';
+  var cards = c.items.map(function (it) {
+    return cardHtml_({ rank: it.rank, name: it.name, role: it.role, note: it.note, meta: it.meta, detail: it.detail, last: it.last });
   }).join('');
-  return '<article class="person" data-teams=" ' + esc_((teamsOf || []).join(' ')) + ' ">' +
-    '<header><h3>' + esc_(c.name) + '</h3><span class="sub">' + esc_(sub) + '</span>' + flags + '</header>' +
+  return '<div class="person" data-person="' + esc_(c.slack_id) + '"' + (hidden ? ' hidden' : '') + '>' +
+    '<div class="phead"><h3>' + esc_(c.name) + '</h3><span class="sub">' + esc_(sub) + '</span>' + flags + '</div>' +
     (c.notes ? '<p class="notes">' + esc_(c.notes) + '</p>' : '') +
-    (items ? '<ul class="items">' + items + '</ul>' : '<p class="notes">見える案件はありません</p>') +
-    (c.share_at ? '<p class="foot">ミエタスク ' + md_(c.share_at) + ' ' + hm_(c.share_at) + '時点</p>' : '') + '</article>';
+    (cards ? sortBar_('person') + '<div class="cards">' + cards + '</div>' : '<p class="notes">見える案件はありません</p>') +
+    (c.share_at ? '<p class="foot">ミエタスク ' + md_(c.share_at) + ' ' + hm_(c.share_at) + '時点</p>' : '') + '</div>';
 }
 
+// メンバーのタブ。人は丸いボタンで1人ずつ選ぶ（気にすべきものがある人から並ぶ）。チームが複数見えるなら、ボタンをチームで絞れる
 function membersPanel_(v) {
-  // その人が入っているチーム（下のチームの人は、上のチームの絞り込みにも出す）
   var teamsOf = {};
   (v.teams || []).forEach(function (t) { t.members.forEach(function (id) { (teamsOf[id] = teamsOf[id] || []).push(t.id); }); });
+  var people = v.people || [];
+  if (!people.length) return '<p class="empty">見える範囲にメンバーがいません</p>';
   var filter = (v.teams || []).length > 1 ? '<label class="filter">チーム <select data-team><option value="">すべて</option>' +
     v.teams.map(function (t) { return '<option value="' + esc_(t.id) + '">' + esc_(t.name) + '</option>'; }).join('') + '</select></label>' : '';
-  var people = v.people || [];
-  return '<div class="bar"><span class="lead">気にすべきものがある人から並べています。一言は各自の Claude が書いたもの（タスクの題名・人の名前は入りません）</span>' + filter + '</div>' +
-    (people.length ? '<div class="people">' + people.map(function (c) { return personHtml_(c, teamsOf[c.slack_id]); }).join('') + '</div>' +
-      '<p class="empty" hidden>このチームにはメンバーがいません</p>' : '<p class="empty">見える範囲にメンバーがいません</p>');
+  var pills = people.map(function (c, i) {
+    var n = c.overdue.length;
+    return '<button type="button" class="pill" data-pick="' + esc_(c.slack_id) + '" data-teams=" ' + esc_((teamsOf[c.slack_id] || []).join(' ')) + ' "' +
+      ' aria-pressed="' + (i === 0) + '">' + esc_(c.name) + (n ? '<span class="n" title="期限超過">' + n + '</span>' : '') + '</button>';
+  }).join('');
+  return '<div class="pickbar">' + filter + '<div class="pills">' + pills + '</div></div>' +
+    people.map(function (c, i) { return personPanel_(c, i > 0); }).join('') +
+    '<p class="lead">気にすべきものがある人から並べています。一言と詳細は各自の Claude が書いたもの（タスクの題名・人の名前は入りません）。</p>';
 }
 
 function projectsPanel_(v) {
   var list = v.projects || [];
-  var rows = list.map(function (p) {
-    var r = rank_(p.rank);
+  var cards = list.map(function (p) {
     var who = p.members.map(function (m) { return esc_(m.name) + (m.role ? '<span class="role">' + esc_(m.role) + '</span>' : ''); }).join('、') +
       (p.others ? '<span class="meta">・ほかに' + Number(p.others) + '人</span>' : '');
     var meta = [p.due_label ? '次の期限 ' + p.due_label : '', p.counts || '', p.progress ? p.progress.label : ''].filter(String).join('・');
-    return '<div class="prow"><div><span class="dot d' + r + '"></span><span class="pn">' + esc_(p.name) + '</span><span class="meta">' + STATE_LABEL[r] + '</span></div>' +
-      '<div class="who">' + who + '</div>' + (meta ? '<div class="meta who">' + esc_(meta) + '</div>' : '') + '</div>';
+    return cardHtml_({ rank: p.rank, name: p.name, meta: meta, due: p.due || (p.progress ? '' : ''), count: p.members.length + Number(p.others || 0),
+      extra: '<div class="who">' + who + '</div>' });
   }).join('');
   return '<p class="lead">同じ案件に誰が関わっているかを確かめる補助の一覧です。案件の名前は、各自の Claude が Slack・メール・議事録・MTD から束ねてつけたもの' +
     '（同じ案件が別の名前で出ていたら、システム管理者が1つにまとめられます）。</p>' +
-    (rows ? '<div class="projects">' + rows + '</div>' : '<p class="empty">見える案件はまだありません（各自のミエタスクが朝に送ると出ます）</p>');
+    (cards ? sortBar_('project') + '<div class="cards">' + cards + '</div>' : '<p class="empty">見える案件はまだありません（各自のミエタスクが朝に送ると出ます）</p>');
 }
 
 function selfPanel_(v) {
-  return '<p class="lead">管理者・役員には、この内容が見えています（自分のチャンネルの「管理者に届く内容」と同じ）。</p>' +
-    '<div class="people">' + personHtml_(v.self, []) + '</div>';
+  return '<p class="lead">管理者・役員には、この内容が見えています（自分のチャンネルの「管理者に届く内容」と同じ）。</p>' + personPanel_(v.self, false);
 }
 
 function renderPage_(v, want) {
@@ -253,7 +273,7 @@ function page_(body) {
   return '<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>ミエタスク</title><style>' + CSS + '</style></head><body>' + body + '</body></html>';
 }
 
-// タブとチームの絞り込み。データは持たない（サーバーで作った HTML を出し分けるだけ）
+// タブ・人の選択・チームの絞り込み・並び替え。データは持たない（サーバーで作った HTML を出し分け・並べ替えるだけ）
 var CLIENT_JS = `
 (function () {
   document.querySelectorAll('nav [data-tab]').forEach(function (b) {
@@ -263,16 +283,49 @@ var CLIENT_JS = `
     });
   });
   var panel = document.getElementById('members');
-  var pick = panel && panel.querySelector('[data-team]');
-  if (!pick) return;
-  pick.addEventListener('change', function () {
-    var shown = 0;
-    panel.querySelectorAll('.person').forEach(function (p) {
-      p.hidden = !!pick.value && p.getAttribute('data-teams').indexOf(' ' + pick.value + ' ') < 0;
-      if (!p.hidden) shown++;
+  function pickPerson(id) {
+    panel.querySelectorAll('[data-pick]').forEach(function (b) { b.setAttribute('aria-pressed', String(b.getAttribute('data-pick') === id)); });
+    panel.querySelectorAll('.person').forEach(function (p) { p.hidden = p.getAttribute('data-person') !== id; });
+  }
+  if (panel) {
+    panel.querySelectorAll('[data-pick]').forEach(function (b) {
+      b.addEventListener('click', function () { pickPerson(b.getAttribute('data-pick')); });
     });
-    var empty = panel.querySelector('.empty');
-    if (empty) empty.hidden = shown > 0;
+    var team = panel.querySelector('[data-team]');
+    if (team) team.addEventListener('change', function () {
+      var first = null, keep = false;
+      panel.querySelectorAll('[data-pick]').forEach(function (b) {
+        b.hidden = !!team.value && b.getAttribute('data-teams').indexOf(' ' + team.value + ' ') < 0;
+        if (!b.hidden && !first) first = b;
+        if (!b.hidden && b.getAttribute('aria-pressed') === 'true') keep = true;
+      });
+      if (!keep && first) pickPerson(first.getAttribute('data-pick'));
+    });
+  }
+  // 並び替え：同じかたまりの .cards の中のカードを並べ直す
+  var num = function (c, k) { return Number(c.getAttribute('data-' + k)) || 0; };
+  var str = function (c, k) { return c.getAttribute('data-' + k) || ''; };
+  var byName = function (a, b) { return str(a, 'name').localeCompare(str(b, 'name'), 'ja'); };
+  var cmp = {
+    rank: function (a, b) { return num(a, 'rank') - num(b, 'rank') || byName(a, b); },
+    name: byName,
+    role: function (a, b) { return (str(a, 'role') || '\\uffff').localeCompare(str(b, 'role') || '\\uffff', 'ja') || num(a, 'rank') - num(b, 'rank'); },
+    last: function (a, b) { return str(b, 'last').localeCompare(str(a, 'last')) || num(a, 'rank') - num(b, 'rank'); },
+    due: function (a, b) { return (str(a, 'due') || '9999').localeCompare(str(b, 'due') || '9999') || num(a, 'rank') - num(b, 'rank'); },
+    count: function (a, b) { return num(b, 'count') - num(a, 'count') || num(a, 'rank') - num(b, 'rank'); },
+  };
+  document.querySelectorAll('.sortbar').forEach(function (bar) {
+    var grid = bar.nextElementSibling;
+    var first = Array.prototype.slice.call(grid.children);
+    bar.querySelectorAll('[data-sort]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        bar.querySelectorAll('[data-sort]').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
+        var k = b.getAttribute('data-sort');
+        // 状態順は、窓口が並べた元の順（状態・期限の近い順）に戻す
+        var list = k === 'rank' ? first.slice() : Array.prototype.slice.call(grid.children).sort(cmp[k]);
+        list.forEach(function (c) { grid.appendChild(c); });
+      });
+    });
   });
 })();
 `;
@@ -458,24 +511,24 @@ var CSS = [
   '.bar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 8px}',
   '.lead{color:var(--muted);font-size:12px;margin:0 0 8px}.bar .lead{margin:0}.filter{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}',
   'select,input[type=text]{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 8px}',
-  '.people{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 16px}',
-  '.person{padding:14px 0;border-top:1px solid var(--line)}.person:first-child{border-top:0}',
-  '.person header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.person h3{margin:0;font-size:15px;font-weight:600}.sub{color:var(--faint);font-size:12px}',
+  '.pickbar{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin:0 0 14px}.pills{display:flex;gap:6px;flex-wrap:wrap;flex:1}',
+  '.pill{border-radius:999px;padding:4px 14px;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}',
+  '.pill[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:var(--bg)}.pill:hover{border-color:var(--faint)}',
+  '.pill .n{display:inline-block;margin-left:6px;min-width:18px;padding:0 6px;border-radius:999px;font-size:11px;background:var(--red-bg);color:var(--red);text-align:center}',
+  '.phead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 2px}.phead h3{margin:0;font-size:17px;font-weight:600}.sub{color:var(--faint);font-size:12px}',
   '.flag{font-size:12px;padding:1px 8px;border-radius:999px}.f0{background:var(--red-bg);color:var(--red)}.f1{background:var(--amber-bg);color:var(--amber)}',
-  '.items{list-style:none;margin:8px 0 0;padding:0;font-size:13px}.items li{padding:5px 0;line-height:1.55}',
-  '.items .l2{color:var(--muted);margin-left:14px;overflow-wrap:anywhere}.items li.r4 .pn,.items li.r4 .l2{color:var(--faint)}',
-  '.items summary{list-style:none;cursor:pointer;position:relative;padding-right:18px}.items summary::-webkit-details-marker{display:none}',
-  '.items summary::after{content:"詳細";position:absolute;right:0;top:0;font-size:11px;color:var(--accent)}',
-  '.items details[open] summary::after{content:"閉じる"}.items summary:hover .pn{text-decoration:underline}',
-  '.detail{margin:4px 0 2px 14px;padding:6px 10px;background:var(--soft);border-radius:6px;color:var(--ink);font-size:12.5px;line-height:1.6}',
-  '.pn{font-weight:500;overflow-wrap:anywhere}.pd{color:var(--muted);margin-left:10px;overflow-wrap:anywhere}',
-
-  '.role{color:var(--faint);font-size:12px;margin-left:6px}.meta{color:var(--faint);font-size:12px;margin-left:10px}',
-  '.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px;background:var(--line);text-indent:0}',
-  '.d0{background:var(--red)}.d1{background:var(--amber)}.d2{background:var(--faint)}.d3{background:var(--line)}.d4{background:transparent;border:1px solid var(--faint)}.d5{background:var(--blue)}',
-  '.notes{margin:4px 0 0;color:var(--faint);font-size:12px}.foot{margin:6px 0 0;color:var(--faint);font-size:11px}',
-  '.projects{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:0 16px}',
-  '.prow{padding:10px 0;border-top:1px solid var(--line);font-size:13px}.prow:first-child{border-top:0}.prow .who{margin:2px 0 0 14px}.prow .meta.who{margin-left:14px}',
+  '.sortbar{display:flex;align-items:center;gap:8px;margin:10px 0 10px}.sortbar .lbl{font-size:12px;color:var(--muted)}',
+  '.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--panel)}',
+  '.seg button{border:0;border-radius:0;font-size:12px;padding:3px 12px;background:none;color:var(--muted)}.seg button[aria-pressed=true]{background:var(--soft);color:var(--ink);font-weight:600}',
+  '.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}',
+  '.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;font-size:13px;min-width:0}',
+  '.card.s0{box-shadow:inset 3px 0 0 var(--red)}.card.s1{box-shadow:inset 3px 0 0 var(--amber)}.card.s5{box-shadow:inset 3px 0 0 var(--blue)}.card.s4{opacity:.6}',
+  '.ct{display:flex;justify-content:space-between;align-items:baseline;gap:8px}.pn{font-weight:600;overflow-wrap:anywhere}.role{color:var(--faint);font-size:12px;white-space:nowrap}',
+  '.note{color:var(--muted);overflow-wrap:anywhere}.meta{color:var(--faint);font-size:12px}.who{font-size:12px;overflow-wrap:anywhere}.who .role{margin-left:2px}',
+  '.card details{margin-top:2px}.card summary{cursor:pointer;font-size:12px;color:var(--accent);list-style:none}.card summary::-webkit-details-marker{display:none}',
+  '.card summary::after{content:" ▾"}.card details[open] summary::after{content:" ▴"}',
+  '.detail{margin:4px 0 0;padding:6px 9px;background:var(--soft);border-radius:6px;color:var(--ink);font-size:12.5px;line-height:1.6}',
+  '.notes{margin:4px 0 0;color:var(--faint);font-size:12px}.foot{margin:10px 0 0;color:var(--faint);font-size:11px}',
   '.empty{color:var(--muted)}',
   '.problems{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:8px 12px;margin:10px 0;font-size:13px}.problems p{margin:2px 0}',
   '.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}',
