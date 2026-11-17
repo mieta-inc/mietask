@@ -1552,3 +1552,124 @@ test('段階と次の節目：受け取ってカードにバーと節目を出�
   assert.ok(strip.indexOf('社内システム運用') < strip.indexOf('契約DB') && !strip.includes('先の案件') && !strip.includes('HubSpot導入'), strip);
   assert.ok(h.includes('data-sort="stage"') && h.includes('data-sort="next"'));
 });
+
+// ---------------------------------------------------------------- 確認コードで使い始める
+
+const hex256 = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+const codeOf = (env, sid) => ((env.slack.dms[sid] || []).slice(-1)[0] || { text: '' }).text.match(/確認コード：(\d{6})/)?.[1];
+const keyOf = res => JSON.parse(Buffer.from(res.key.slice('mietask2.'.length), 'base64url').toString('utf8'));
+
+test('確認コード：申し込むと本人の DM に6桁が届き、コードと合札がそろえば台帳に登録して鍵を渡す', () => {
+  const env = load();
+  seedDash(env);
+  env.ss.getSheetByName('設定').appendRow(['email_domain', 'example.com']);
+  const secret = 'pc-secret-1';
+  const start = call(env, { action: 'enroll_start', slack_id: 'u0new0007', name: '新人 七海', email: 'Nanami@Example.com', pc: '新人のMac', verifier: hex256(secret), secret });
+  assert.ok(start.ok && start.enroll_id, JSON.stringify(start));
+  // 合札そのものは窓口に残さない（sha256 だけ）
+  assert.ok(!JSON.stringify(env.props).includes(secret), '合札そのものを窓口に残している');
+  const code = codeOf(env, 'U0NEW0007');
+  assert.match(env.slack.dms.U0NEW0007[0].text, /確認コード：\d{6}[\s\S]*新人のMac で[\s\S]*無視してください/);
+  assert.ok(!env.props.KEY_U0NEW0007, 'コードを入れる前に鍵ができている');
+  // まだコードを入れていないうちは、同じ人の申し込みを重ねない
+  assert.strictEqual(call(env, { action: 'enroll_start', slack_id: 'U0NEW0007', verifier: hex256('x') }).error, 'pending');
+
+  const res = call(env, { action: 'enroll_claim', slack_id: 'U0NEW0007', enroll_id: start.enroll_id, code, secret });
+  assert.ok(res.ok && res.registered, JSON.stringify(res));
+  const k = keyOf(res);
+  assert.deepStrictEqual([k.i, k.u], ['U0NEW0007', 'https://script.google.com/macros/s/X/exec']);
+  // 台帳に行ができる（チームなし＝まだ誰にも見えない）。メールは本人のプロフィールから
+  const row = memberRow(env, 'U0NEW0007');
+  assert.deepStrictEqual(['名前', 'メール', 'チーム', 'ロール', '状態'].map(h => cell(env, 'メンバー', row, h)), ['新人 七海', 'nanami@example.com', '', '', '有効']);
+  assert.match(cell(env, 'メンバー', row, '鍵'), /^発行/);
+  // 渡した鍵でそのまま窓口が使える
+  const me = call(env, { action: 'me', id: k.i, k: k.k });
+  assert.ok(me.ok && me.me.name === '新人 七海', JSON.stringify(me));
+  // 確認コードの DM は消え、変更の記録に残る（鍵の中身は残さない）
+  assert.ok(!(env.slack.dms.U0NEW0007 || []).some(m => /確認コード/.test(m.text)), '確認コードの DM が残っている');
+  const log = env.ss.getSheetByName('変更の記録').cells.slice(1);
+  assert.deepStrictEqual(log.map(r => [r[1], r[3]]), [['新人 七海（本人・確認コード）', '登録'], ['新人 七海（本人・確認コード）', '鍵']]);
+  assert.ok(!JSON.stringify(log).includes('mietask2.'));
+  // 1回きり
+  assert.strictEqual(call(env, { action: 'enroll_claim', slack_id: 'U0NEW0007', enroll_id: start.enroll_id, code, secret }).error, 'expired');
+});
+
+test('確認コード：違う PC・違うコード・期限切れ・停止の人は通さない。台帳にいる人は行を足さずに鍵だけ作り直す', () => {
+  const env = load();
+  seedDash(env);
+  const secret = 'pc-secret-2';
+  const go = (sid, extra = {}) => call(env, Object.assign({ action: 'enroll_start', slack_id: sid, name: 'x', verifier: hex256(secret) }, extra));
+  // 他人の Slack ID を名乗っても、コードは本人（U1）の DM に届くだけ
+  const s1 = go('U1');
+  const code = codeOf(env, 'U1');
+  const claim = c => call(env, Object.assign({ action: 'enroll_claim', slack_id: 'U1', enroll_id: s1.enroll_id, code, secret }, c));
+  assert.strictEqual(claim({ secret: 'other-pc' }).error, 'bad_request', '別の PC から受け取れてしまう');
+  const wrong = String((Number(code) + 1) % 1000000).padStart(6, '0');
+  const bad = claim({ code: wrong });
+  assert.strictEqual(bad.error, 'bad_code', JSON.stringify(bad));
+  assert.match(bad.message, /あと 4 回/);
+  for (let i = 0; i < 3; i++) claim({ code: wrong });
+  assert.strictEqual(claim({ code: wrong }).error, 'too_many');
+  assert.strictEqual(claim({}).error, 'expired', '5回まちがえたあとも受け付けている');
+  // 期限切れ
+  const s2 = go('U1');
+  const p = JSON.parse(env.props.ENROLL_U1);
+  p.exp = Date.now() - 1;
+  env.props.ENROLL_U1 = JSON.stringify(p);
+  assert.strictEqual(call(env, { action: 'enroll_claim', slack_id: 'U1', enroll_id: s2.enroll_id, code: codeOf(env, 'U1'), secret }).error, 'expired');
+  // 台帳にいる人は、行を足さずに鍵を作り直す（チーム・ロールはそのまま）
+  const rows = env.ss.getSheetByName('メンバー').cells.length;
+  const s3 = go('U1');
+  const ok = call(env, { action: 'enroll_claim', slack_id: 'U1', enroll_id: s3.enroll_id, code: ' ' + codeOf(env, 'U1').replace(/(\d{3})/, '$1-'), secret });
+  assert.ok(ok.ok && !ok.registered, JSON.stringify(ok));
+  assert.strictEqual(env.ss.getSheetByName('メンバー').cells.length, rows);
+  assert.strictEqual(cell(env, 'メンバー', memberRow(env, 'U1'), 'チーム'), 'pm1');
+  // 停止の人は申し込めない
+  assert.strictEqual(go('U5').error, 'stopped');
+  // 形のおかしい申し込み
+  assert.strictEqual(go('x').error, 'bad_request');
+  assert.strictEqual(go('U0000099', { verifier: 'short' }).error, 'bad_request');
+  // DM が送れなければ断り、申し込みを残さない
+  env.slack.dmFails = true;
+  assert.strictEqual(go('U0000098').error, 'dm_failed');
+  assert.ok(!env.props.ENROLL_U0000098);
+  env.slack.dmFails = false;
+  // 窓口全体で1時間あたりの件数を絞る
+  env.props.ENROLL_RATE = JSON.stringify({ hour: Math.floor(Date.now() / 3600000), n: 30 });
+  assert.strictEqual(go('U0000097').error, 'busy');
+});
+
+test('チームを選ぶ：台帳の「チーム」から選択肢を返し、入っていない人だけが選べる。そのチームの管理者に知らせる', () => {
+  const env = load();
+  seedDash(env);
+  const secret = 'pc-secret-3';
+  const s = call(env, { action: 'enroll_start', slack_id: 'U0NEW0008', name: '新人 八郎', verifier: hex256(secret) });
+  const k = keyOf(call(env, { action: 'enroll_claim', slack_id: 'U0NEW0008', enroll_id: s.enroll_id, code: codeOf(env, 'U0NEW0008'), secret }));
+  const ask = b => call(env, Object.assign({ id: k.i, k: k.k }, b));
+  const list = ask({ action: 'teams' });
+  assert.deepStrictEqual(list.teams.map(t => [t.id, t.path]), [['pm', '全社 › PM'], ['pm1', '全社 › PM › PM1'], ['pm2', '全社 › PM › PM2'], ['pd', '全社 › PD'], ['all', '全社']]);
+  assert.deepStrictEqual(list.mine, []);
+  // 台帳でチームを足せば、次から選択肢に出る
+  env.ss.getSheetByName('チーム').appendRow(['pm3', 'PM3', 'pm', '', '']);
+  assert.ok(ask({ action: 'teams' }).teams.some(t => t.id === 'pm3' && t.path === '全社 › PM › PM3'));
+
+  assert.strictEqual(ask({ action: 'join_team', team: 'nope' }).error, 'bad_request');
+  // PM1 には管理者がいないので、上の PM の管理者（管理 花子）に知らせる
+  const j = ask({ action: 'join_team', team: 'PM1' });
+  assert.ok(j.ok, JSON.stringify(j));
+  assert.deepStrictEqual([j.team, j.notified], ['pm1', ['管理 花子']]);
+  assert.strictEqual(cell(env, 'メンバー', memberRow(env, 'U0NEW0008'), 'チーム'), 'pm1');
+  assert.match(env.slack.dms.UM.slice(-1)[0].text, /新人 八郎 さんがミエタスクで「PM1」に入りました[\s\S]*システム管理者（システム 管理）に伝えて/);
+  // 入ったあとは選び直せない（付け替えはシステム管理者）
+  assert.strictEqual(ask({ action: 'join_team', team: 'pd' }).error, 'already');
+  // 入った時点から、そのチームの管理者に見える
+  assert.ok(dash(env, 'kanri@example.com').teams.find(t => t.id === 'pm1').members.includes('U0NEW0008'));
+  assert.deepStrictEqual([...env.ss.getSheetByName('変更の記録').cells.slice(-1)[0].slice(1, 6)], ['新人 八郎（本人・setup）', '新人 八郎（U0NEW0008）', 'チーム', '', 'pm1']);
+  // 管理者がどこにもいないチームなら、システム管理者に知らせる
+  setCell(env, 'チーム', 2, '管理者', '');
+  const s2 = call(env, { action: 'enroll_start', slack_id: 'U0NEW0009', name: '新人 九', verifier: hex256(secret) });
+  const k2 = keyOf(call(env, { action: 'enroll_claim', slack_id: 'U0NEW0009', enroll_id: s2.enroll_id, code: codeOf(env, 'U0NEW0009'), secret }));
+  const j2 = call(env, { action: 'join_team', id: k2.i, k: k2.k, team: 'pm2' });
+  assert.deepStrictEqual(j2.notified, ['システム 管理']);
+  assert.match(env.slack.dms.UA.slice(-1)[0].text, /「PM2」に入りました[\s\S]*ページの「管理 → メンバー」/);
+});
