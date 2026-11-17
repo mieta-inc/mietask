@@ -107,6 +107,10 @@ func usage() {
   autoupdate                          このプラグインの自動更新を Claude Code の設定に入れる
   delete --ts TS                      Botの投稿を消す
   paths home|tmp                      データの置き場所を出す
+  enroll start --slack-id U --name N [--email E] [--pc P]   確認コードを本人の Slack の DM に送ってもらう
+  enroll finish --code 123456         確認コードを窓口に出し、鍵を受け取って保存する（鍵は表示しない）
+  teams                               setup で選べるチームの一覧（管理台帳の「チーム」）
+  join-team ID|none                   チームに入る（まだどこにも入っていないときだけ。none は選ばない）
   setup --slack-id U --email E --name N   設定・台帳・投稿先チャンネルをまとめて用意する
   admin status|archive-member|make-key   管理者用
   doctor                              設定・トークン・接続を点検する
@@ -195,6 +199,16 @@ func run(argv []string) int {
 		var a *args
 		if a, err = parseArgs(rest); err == nil {
 			err = cmdRegistry(a.get("team"))
+		}
+	case "enroll":
+		err = runEnroll(rest)
+	case "teams":
+		err = cmdTeams()
+	case "join-team":
+		if len(rest) == 0 {
+			err = errors.New("チームID（teams で出たもの）か none を渡してください")
+		} else {
+			err = cmdJoinTeam(rest[0])
 		}
 	case "setup":
 		var a *args

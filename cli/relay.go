@@ -77,8 +77,13 @@ func relayCall(k *relayKey, action string, params map[string]any) (map[string]an
 	body["id"] = k.ID
 	body["k"] = k.Secret
 	body["action"] = action
+	return relayCallURL(k.URL, body)
+}
+
+// relayCallURL は窓口に body をそのまま送る（鍵を持っていない確認コードの申し込みもここを通る）。
+func relayCallURL(url string, body map[string]any) (map[string]any, error) {
 	b, _ := json.Marshal(body)
-	res, err := relayClient.Post(k.URL, "application/json", bytes.NewReader(b))
+	res, err := relayClient.Post(url, "application/json", bytes.NewReader(b))
 	if err != nil {
 		return nil, fmt.Errorf("管理台帳の窓口に接続できません: %s", hideURL(err))
 	}

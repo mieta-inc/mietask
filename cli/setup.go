@@ -129,12 +129,12 @@ func cmdSetup(a *args) error {
 	var token string
 	if relay == nil {
 		if token, err = readToken(""); err != nil {
-			return fmt.Errorf("鍵がまだ置かれていません。先に入力欄で鍵を貼ってください。\n%s", err)
+			return fmt.Errorf("鍵がまだ置かれていません。先に確認コードで鍵を受け取ってください（mietask enroll start）。\n%s", err)
 		}
 		fmt.Println("鍵: OK")
 	} else {
 		if relay.ID != slackID {
-			return fmt.Errorf("この鍵は別の人（%s）のものです。自分宛ての DM で届いた鍵を貼ってください", relay.ID)
+			return fmt.Errorf("この鍵は別の人（%s）のものです。確認コードで自分の鍵を受け取り直してください（mietask enroll start）", relay.ID)
 		}
 		me, err := relayMe(relay)
 		if err != nil {

@@ -106,6 +106,12 @@ function doPost(e) {
     return json_({ ok: false, error: 'bad_request', message: 'JSONが読めません' });
   }
   try {
+    // 鍵をまだ持っていない人の申し込み（確認コード）。ここだけは鍵なしで受ける
+    if (body.action === 'enroll_start' || body.action === 'enroll_claim') {
+      var res = body.action === 'enroll_start' ? enrollStart_(body) : enrollClaim_(body);
+      res.ok = true;
+      return json_(res);
+    }
     if (body.action === 'dashboard') {
       var dss = SpreadsheetApp.getActiveSpreadsheet();
       var demail = dashboardAuth_(body);
@@ -131,6 +137,32 @@ var ACTIONS = {
   // 自分の情報・所属チーム。管理者なら、管理しているチームのメンバーも返す
   me: function (ctx) {
     return { me: publicMember_(ctx.member), teams: myTeams_(ctx), managed: managedView_(ctx), settings: publicSettings_(ctx.ss) };
+  },
+
+  // setup で選ぶチームの一覧（台帳の「チーム」シートの順。上のチームからの道すじを付ける）。台帳でチームを足せば、ここに出る
+  teams: function (ctx) {
+    var teams = allTeams_(ctx.ss);
+    return { teams: teams.map(function (t) { return { id: t.id, name: t.name || t.id, path: teamPath_(teams, t) }; }), mine: ctx.member.teams };
+  },
+
+  // setup で本人がチームを選ぶ。まだどのチームにも入っていない人だけ（入っている人の付け替えはシステム管理者が行う）。
+  // チームに入って変わるのは「その人の案件が、そのチームの管理者に見える」ことだけなので、承認は取らず、管理者に知らせる
+  join_team: function (ctx, body) {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      var m = findMember_(ctx.ss, ctx.member.slack_id);
+      if (m.teams.length) throw relayError_('already', 'すでに ' + m.teams.join(', ') + ' に入っています。チームを変えるときは、システム管理者に頼んでください');
+      var teams = allTeams_(ctx.ss);
+      var t = teamById_(teams, String(body.team || '').trim());
+      if (!t) throw relayError_('bad_request', 'チーム「' + String(body.team || '') + '」は台帳にありません');
+      setCell_(ctx.ss, SHEETS.members, m.row, 'チーム', t.id);
+      logChanges_(ctx.ss, m.name + '（本人・setup）', [[m.name + '（' + m.slack_id + '）', 'チーム', '', t.id]]);
+      var told = notifyJoin_(ctx.ss, teams, t, m);
+      return { team: t.id, name: t.name || t.id, notified: told };
+    } finally {
+      lock.releaseLock();
+    }
   },
 
   // 投稿先を用意する（無ければ作り、本人を招待する）。鍵を届けた DM はここで消す
@@ -272,6 +304,185 @@ function auth_(body) {
   var want = PropertiesService.getScriptProperties().getProperty('KEY_' + id);
   if (!want || want !== sha256_(key)) throw relayError_('bad_key', '鍵が無効です（作り直されたか、無効にされています）。管理者に確認してください');
   return { ss: ss, member: m };
+}
+
+// ---------------------------------------------------------------- 確認コードで使い始める（鍵を持っていない人）
+// 本人の PC（ミエタスク）が申し込むと、その Slack ID の DM に6桁の確認コードを送る。
+// PC は手元に合札（乱数）を持ち、その sha256 だけを先に送る。鍵はコードと合札がそろったときにだけ、その場で作って渡す。
+// コードは本人の DM にしか届かないので、他人の Slack ID を名乗って申し込んでも先へ進めない（本人は何もしなくてよい）。
+// 申し込みは Slack ID ごとに1件まで、10分で無効。打ち間違いは5回まで。窓口全体でも1時間あたりの件数を絞る。
+
+var ENROLL_TTL_MS = 10 * 60 * 1000;
+var ENROLL_TRIES = 5;
+var ENROLL_PER_HOUR = 30;
+
+function jsonProp_(props, key) {
+  var raw = props.getProperty(key);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (err) { return null; }
+}
+
+// 申し込みに書かれた名前などは、数式や改行にならない形にして長さを切る（台帳とメッセージにそのまま入るため）
+function enrollText_(v, max) {
+  return String(v === undefined || v === null ? '' : v).replace(/[\r\n\t]/g, ' ').replace(/^[=+\-@\s]+/, '').trim().slice(0, max);
+}
+
+function enrollSlackId_(body) {
+  var sid = String(body.slack_id || '').trim().toUpperCase();
+  if (!/^[UW][A-Z0-9]+$/.test(sid)) throw relayError_('bad_request', 'Slack ID が読めません'); // 鍵の確かめ（auth_）と同じ形
+  return sid;
+}
+
+// 6桁の確認コード（Utilities.getUuid の乱数から作る）
+function enrollCode_() {
+  var hex = Utilities.getUuid().replace(/-/g, '').slice(0, 12);
+  return ('000000' + (parseInt(hex, 16) % 1000000)).slice(-6);
+}
+
+function enrollStart_(body) {
+  var sid = enrollSlackId_(body);
+  var verifier = String(body.verifier || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(verifier)) throw relayError_('bad_request', '申し込みの形が違います。ミエタスクを最新にしてから、もう一度試してください');
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var m = findMember_(ss, sid);
+  if (m && m.status === STOPPED) throw relayError_('stopped', 'ミエタスクの利用は管理台帳で停止されています。管理者に確認してください');
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var now = Date.now();
+    var cur = jsonProp_(props, 'ENROLL_' + sid);
+    if (cur && cur.exp > now) {
+      throw relayError_('pending', '確認コードはもう Slack の DM に送っています。届いた6桁を入れてください（送り直せるのは ' + Math.ceil((cur.exp - now) / 60000) + ' 分後です）');
+    }
+    var hour = Math.floor(now / 3600000);
+    var rate = jsonProp_(props, 'ENROLL_RATE') || {};
+    if (rate.hour !== hour) rate = { hour: hour, n: 0 };
+    if (rate.n >= ENROLL_PER_HOUR) throw relayError_('busy', '申し込みが混み合っています。しばらくしてから、もう一度試してください');
+    rate.n++;
+    props.setProperty('ENROLL_RATE', JSON.stringify(rate));
+    var id = Utilities.getUuid();
+    var code = enrollCode_();
+    var pc = enrollText_(body.pc, 60);
+    var text = ':key: *ミエタスクの確認コード：' + code + '*\n' +
+      (pc ? pc + ' で' : '') + 'ミエタスクのセットアップが始まりました。この番号を Claude に入力してください（10分のあいだ有効です）。\n' +
+      '心当たりがなければ、このメッセージは無視してください。番号を入れないかぎり、何も起きません。';
+    var r = slack_('chat.postMessage', { channel: sid, text: text });
+    if (!r.ok) throw relayError_('dm_failed', '確認コードを Slack の DM で送れませんでした（' + r.error + '）。Slack ID が正しいか確かめてください');
+    props.setProperty('ENROLL_' + sid, JSON.stringify({
+      id: id, code: sha256_(id + ':' + code), verifier: verifier, exp: now + ENROLL_TTL_MS, tries: 0,
+      name: enrollText_(body.name, 60), email: enrollText_(body.email, 200).toLowerCase(), pc: pc,
+      msg: { channel: r.channel || '', ts: r.ts || '' },
+    }));
+    return { enroll_id: id, expires_in: ENROLL_TTL_MS / 1000 };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function enrollClaim_(body) {
+  var sid = enrollSlackId_(body);
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var cur = jsonProp_(props, 'ENROLL_' + sid);
+    if (!cur || cur.exp <= Date.now() || cur.id !== String(body.enroll_id || '')) {
+      throw relayError_('expired', '確認コードの期限が切れたか、申し込みが見つかりません。もう一度 /mietask:setup を打ってください');
+    }
+    if (sha256_(String(body.secret || '')) !== cur.verifier) {
+      throw relayError_('bad_request', 'この申し込みは別の PC で始められたものです。この PC で /mietask:setup を打ち直してください');
+    }
+    var code = String(body.code || '').replace(/\D/g, '');
+    if (sha256_(cur.id + ':' + code) !== cur.code) {
+      cur.tries = (cur.tries || 0) + 1;
+      if (cur.tries >= ENROLL_TRIES) {
+        props.deleteProperty('ENROLL_' + sid);
+        throw relayError_('too_many', '確認コードを ' + ENROLL_TRIES + ' 回まちがえたので、この申し込みは無効にしました。もう一度 /mietask:setup を打ってください');
+      }
+      props.setProperty('ENROLL_' + sid, JSON.stringify(cur));
+      throw relayError_('bad_code', '確認コードが違います（あと ' + (ENROLL_TRIES - cur.tries) + ' 回）');
+    }
+    props.deleteProperty('ENROLL_' + sid); // 1回きり
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var m = findMember_(ss, sid);
+    if (m && m.status === STOPPED) throw relayError_('stopped', 'ミエタスクの利用は管理台帳で停止されています。管理者に確認してください');
+    var log = [], fresh = !m;
+    var email = enrollEmail_(ss, sid, cur.email);
+    if (fresh) {
+      var name = cur.name || sid;
+      var sh = sheet_(ss, SHEETS.members);
+      var head = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+      var row = { '名前': name, 'Slack ID': sid, 'メール': email, '状態': '有効' };
+      sh.appendRow(head.map(function (h) { return row[String(h).trim()] || ''; }));
+      log.push([name + '（' + sid + '）', '登録', '', '確認コードで登録' + (email ? '・メール: ' + email : '')]);
+      m = findMember_(ss, sid);
+    } else if (!m.email && email) {
+      setCell_(ss, SHEETS.members, m.row, 'メール', email);
+      log.push([m.name + '（' + sid + '）', 'メール', '', email]);
+    }
+    var key = newKey_(ss, m);
+    log.push([m.name + '（' + sid + '）', '鍵', m.key || '', '確認コードで発行' + (cur.pc ? '（' + cur.pc + '）' : '')]);
+    logChanges_(ss, m.name + '（本人・確認コード）', log);
+    // 確認コードの DM は役目を終えたので消す（消せなくても続ける）
+    if (cur.msg && cur.msg.ts) slack_('chat.delete', { channel: cur.msg.channel, ts: cur.msg.ts });
+    return { key: key, name: m.name, registered: fresh };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 申し込みのメール（本人の Slack のプロフィールから）。形が正しく、「設定」の email_domain に合い、ほかの人が使っていないときだけ使う
+function enrollEmail_(ss, sid, email) {
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return '';
+  var domain = String(settings_(ss).email_domain || '').trim().toLowerCase().replace(/^@/, '');
+  if (domain && email.split('@')[1] !== domain) return '';
+  var taken = rows_(ss, SHEETS.members).some(function (r) { return r['Slack ID'] !== sid && String(r['メール']).trim().toLowerCase() === email; });
+  return taken ? '' : email;
+}
+
+// 「変更の記録」に残す（ページからの変更と同じ形）
+function logChanges_(ss, who, log) {
+  var at = nowJst_();
+  var sh = sheet_(ss, SHEETS.changes);
+  log.forEach(function (l) { sh.appendRow([at, who, l[0], l[1], l[2], l[3]]); });
+}
+
+// チームの道すじ（PD › PM › PM1）。輪になっていても止まる
+function teamPath_(teams, t) {
+  var names = [], seen = {}, cur = t;
+  while (cur && !seen[cur.id.toLowerCase()]) {
+    seen[cur.id.toLowerCase()] = true;
+    names.unshift(cur.name || cur.id);
+    cur = cur.parent ? teamById_(teams, cur.parent) : null;
+  }
+  return names.join(' › ');
+}
+
+// 本人がチームに入ったことを、そのチームの管理者に知らせる。いなければ上のチームの管理者、それもいなければシステム管理者
+function notifyJoin_(ss, teams, t, m) {
+  var members = rows_(ss, SHEETS.members).map(function (r, i) { return memberFromRow_(r, i + 2); })
+    .filter(function (x) { return x.slack_id && x.status !== STOPPED; });
+  var byId = {};
+  members.forEach(function (x) { byId[x.slack_id] = x; });
+  var sys = members.filter(isSystemAdmin_);
+  var to = [], seen = {}, cur = t, viaSys = false;
+  while (cur && !seen[cur.id.toLowerCase()] && !to.length) {
+    seen[cur.id.toLowerCase()] = true;
+    to = (cur.managers || []).filter(function (u) { return byId[u] && u !== m.slack_id; });
+    cur = cur.parent ? teamById_(teams, cur.parent) : null;
+  }
+  if (!to.length) { to = sys.map(function (x) { return x.slack_id; }).filter(function (u) { return u !== m.slack_id; }); viaSys = true; }
+  var sysNames = sys.map(function (x) { return x.name; }).join('・') || 'システム管理者';
+  var text = ':wave: *' + m.name + ' さんがミエタスクで「' + (t.name || t.id) + '」に入りました*\n' +
+    'この人の持ち案件が、このチームの管理者のページに出るようになります。\n' +
+    (viaSys ? '違っていたら、ページの「管理 → メンバー」でチームを直してください。' : '違っていたら、システム管理者（' + sysNames + '）に伝えてください。');
+  var told = [];
+  uniq_(to).forEach(function (u) {
+    var r = slack_('chat.postMessage', { channel: u, text: text });
+    if (r.ok) told.push(byId[u].name);
+  });
+  return told;
 }
 
 // ---------------------------------------------------------------- メンバー・チーム
@@ -813,7 +1024,7 @@ function setupSheets() {
     SpreadsheetApp.newDataValidation().requireValueInList(['有効', STOPPED], true).build());
   var settings = sheet_(ss, SHEETS.settings);
   var have = settings_(ss);
-  var defaults = { relay_url: '', workspace: '', bot_username: 'ミエタスク', bot_icon_url: '', notion_projects: '', notion_tasks: '' };
+  var defaults = { relay_url: '', workspace: '', bot_username: 'ミエタスク', bot_icon_url: '', notion_projects: '', notion_tasks: '', email_domain: '' };
   Object.keys(defaults).forEach(function (k) {
     if (!(k in have)) settings.appendRow([k, defaults[k]]);
   });
