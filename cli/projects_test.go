@@ -173,3 +173,38 @@ func TestProjectDetail(t *testing.T) {
 		}
 	}
 }
+
+// 段階と次の節目：書いた日に入れ替わり、書かなければ前のものが残る。形の違うものは止まる
+func TestProjectStageAndMilestone(t *testing.T) {
+	setupHome(t)
+	fakeToday(t, "2026-11-17")
+	_, err := runUpdate(t, `{"touched":[{"name":"契約DB","state":"動いている","stage":"進行中","next":"項目を固める打合せ","next_date":"2026-11-25"}]}`)
+	must(t, err)
+	_, err = runUpdate(t, `{"touched":[{"name":"契約DB","state":"動いている","note":"レビュー中"}]}`)
+	must(t, err)
+	b, _ := loadBook()
+	p := b.Projects[0]
+	if p.Stage != "進行中" || p.Next != "項目を固める打合せ" || p.NextDate != "2026-11-25" {
+		t.Fatalf("前の段階と節目が残っていない: %+v", p)
+	}
+	// 次の節目を書き直すと、日付ごと入れ替わる（日付の無い節目に移ったら、古い日付は消える）
+	_, err = runUpdate(t, `{"touched":[{"name":"契約DB","state":"動いている","stage":"仕上げ","next":"操作手順を文書に残す"}]}`)
+	must(t, err)
+	b, _ = loadBook()
+	if p = b.Projects[0]; p.Stage != "仕上げ" || p.NextDate != "" {
+		t.Fatalf("節目が入れ替わっていない: %+v", p)
+	}
+	if !strings.Contains(sharePreview(projectShareItems(b)), "• 契約DB — 動いている・仕上げ：レビュー中\n　　次: 日付未定　操作手順を文書に残す") {
+		t.Errorf("管理者に届く内容に段階と節目が出ていない:\n%s", sharePreview(projectShareItems(b)))
+	}
+	for name, body := range map[string]string{
+		"段階が決まりの外": `{"touched":[{"name":"x","state":"動いている","stage":"完了"}]}`,
+		"節目が長い":    `{"touched":[{"name":"x","state":"動いている","next":"` + strings.Repeat("あ", 31) + `"}]}`,
+		"日付の形":     `{"touched":[{"name":"x","state":"動いている","next":"打合せ","next_date":"11/25"}]}`,
+		"日付だけ":     `{"touched":[{"name":"x","state":"動いている","next_date":"2026-11-25"}]}`,
+	} {
+		if _, err := runUpdate(t, body); err == nil {
+			t.Errorf("%s: 受け付けてしまった", name)
+		}
+	}
+}

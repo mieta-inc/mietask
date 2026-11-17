@@ -29,7 +29,10 @@ type shareItem struct {
 	State    string `json:"state"`
 	Due      string `json:"due,omitempty"`
 	Note     string `json:"note,omitempty"`      // いま何をしているかの一言（題名・人の名前は入れない）
-	Detail   string `json:"detail,omitempty"`    // 詳細（2〜3行。持ち案件の台帳から）
+	Detail   string `json:"detail,omitempty"`    // 詳細（数行。持ち案件の台帳から）
+	Stage    string `json:"stage,omitempty"`     // 段階（準備・進行中・仕上げ・運用中）
+	Next     string `json:"next,omitempty"`      // 次の節目
+	NextDate string `json:"next_date,omitempty"` // 次の節目の日付
 	Role     string `json:"role,omitempty"`      // 関わり方（リード・担当・手伝い など）
 	LastSeen string `json:"last_seen,omitempty"` // 最後に動いた日（持ち案件の台帳から）
 	Open     *int   `json:"open,omitempty"`      // まとまりの中で、まだ終わっていないタスクの数
@@ -83,6 +86,10 @@ func loadShare(path string) ([]shareItem, error) {
 		last, _ := it["last_seen"].(string)
 		detail, _ := it["detail"].(string)
 		detail = strings.TrimSpace(detail)
+		stage, _ := it["stage"].(string)
+		next, _ := it["next"].(string)
+		next = strings.TrimSpace(next)
+		nextDate, _ := it["next_date"].(string)
 		switch {
 		case name == "":
 			return nil, fmt.Errorf("%s の案件名が空です", where)
@@ -106,6 +113,15 @@ func loadShare(path string) ([]shareItem, error) {
 		if err := checkProjectText(where, "詳細", detail, projectDetail); err != nil {
 			return nil, err
 		}
+		if err := checkProjectText(where, "次の節目", next, projectNextMax); err != nil {
+			return nil, err
+		}
+		if stage != "" && !contains(projectStages, stage) {
+			return nil, fmt.Errorf("%s の段階は %s のどれかです", where, strings.Join(projectStages, "・"))
+		}
+		if nextDate != "" && !reYMD.MatchString(nextDate) {
+			return nil, fmt.Errorf("%s の次の節目の日付は yyyy-mm-dd で書きます（%q になっています）", where, nextDate)
+		}
 		open, err := shareCount(it, "open", where+" の残りの件数（open）")
 		if err != nil {
 			return nil, err
@@ -117,7 +133,8 @@ func loadShare(path string) ([]shareItem, error) {
 		if open != nil && overdue != nil && *overdue > *open {
 			return nil, fmt.Errorf("%s の超過の件数（%d）が残りの件数（%d）より多くなっています", where, *overdue, *open)
 		}
-		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Detail: detail, Role: role, LastSeen: last, Open: open, Overdue: overdue})
+		out = append(out, shareItem{Name: name, State: state, Due: due, Note: note, Detail: detail, Role: role, LastSeen: last, Open: open, Overdue: overdue,
+			Stage: stage, Next: next, NextDate: nextDate})
 	}
 	return out, nil
 }
@@ -179,6 +196,9 @@ func sharePreview(items []shareItem) string {
 			l += "（" + it.Role + "）"
 		}
 		l += " — " + it.State
+		if it.Stage != "" {
+			l += "・" + it.Stage
+		}
 
 		if c := countLabel(it); c != "" {
 			l += "・" + c
@@ -191,6 +211,9 @@ func sharePreview(items []shareItem) string {
 		}
 		if it.LastSeen != "" && it.LastSeen != ymd(todayJST()) {
 			l += "（最後に動いた " + shortDate(it.LastSeen) + "）"
+		}
+		if it.Next != "" {
+			l += "\n　　次: " + nextLabel(it.NextDate, it.Next)
 		}
 		if it.Detail != "" {
 			l += "\n　　" + it.Detail

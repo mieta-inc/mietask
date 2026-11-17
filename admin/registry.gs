@@ -445,6 +445,8 @@ var SHARE_FRESH_DAYS = 7; // 持ち案件の一覧は、この日数のあいだ
 var HINT_MAX = 80;
 var NOTE_MAX = 40; // 案件ごとの「いま何をしているか」の一言
 var DETAIL_MAX = 300; // 案件ごとの詳細（ページではトグルで開く）
+var STAGES = ['準備', '進行中', '仕上げ', '運用中']; // 案件の段階（どこまで進んでいるか）
+var NEXT_MAX = 30; // 次の節目
 
 // 件数（残り・超過）。書かれていなければ null（古い版のミエタスクは件数を送らない）
 function shareCount_(v, label) {
@@ -483,6 +485,15 @@ function cleanShare_(raw) {
     if (detail.length > DETAIL_MAX) throw relayError_('bad_share', where + ' の詳細が長すぎます（' + DETAIL_MAX + '文字まで）');
     if (/[\r\n<>@]|https?:/i.test(detail)) throw relayError_('bad_share', where + ' の詳細に改行・リンク・メンション・メールアドレスは入れられません');
     if (detail) out.detail = detail;
+    var stage = String(it.stage || '');
+    if (stage && STAGES.indexOf(stage) < 0) throw relayError_('bad_share', where + ' の段階は ' + STAGES.join('・') + ' のどれかです');
+    if (stage) out.stage = stage;
+    var next = String(it.next || '').trim();
+    if (next.length > NEXT_MAX) throw relayError_('bad_share', where + ' の次の節目が長すぎます（' + NEXT_MAX + '文字まで）');
+    if (/[\r\n<>@]|https?:/i.test(next)) throw relayError_('bad_share', where + ' の次の節目に改行・リンク・メンション・メールアドレスは入れられません');
+    var nextDate = String(it.next_date || '');
+    if (nextDate && !/^\d{4}-\d{2}-\d{2}$/.test(nextDate)) throw relayError_('bad_share', where + ' の次の節目の日付は yyyy-MM-dd です');
+    if (next) { out.next = next; if (nextDate) out.next_date = nextDate; }
     var open = shareCount_(it.open, where + ' の残りの件数（open）');
     var overdue = shareCount_(it.overdue, where + ' の超過の件数（overdue）');
     if (open !== null) out.open = open;
@@ -1160,7 +1171,7 @@ function memberEntries_(st, sh, today) {
       var rank = it.state in SHARE_RANK ? SHARE_RANK[it.state] : RANK.running;
       out.push({ name: it.name, src: 'share', rank: rank, due: it.due || '', roles: it.role ? [it.role] : [], start: '', end: '',
         open: it.open === undefined ? null : it.open, overdue: it.overdue === undefined ? null : it.overdue, people: [], note: it.note || '',
-        detail: it.detail || '', last_seen: it.last_seen || '' });
+        detail: it.detail || '', last_seen: it.last_seen || '', stage: it.stage || '', next: it.next || '', next_date: it.next_date || '' });
     });
   }
   return out;
@@ -1186,6 +1197,8 @@ function personItems_(entries, resolve, today) {
     var note = sh.map(function (e) { return e.note; }).filter(String)[0] || mtd.map(function (e) { return e.note; }).filter(String)[0] || '';
     if (!note && sh.length) note = SHARE_WORD[Math.min.apply(null, sh.map(function (e) { return e.rank; }))] || '';
     var detail = sh.map(function (e) { return e.detail; }).filter(String)[0] || '';
+    var stage = sh.map(function (e) { return e.stage; }).filter(String)[0] || '';
+    var nx = sh.filter(function (e) { return e.next; })[0] || null;
     var dues = list.map(function (e) { return e.due; }).filter(String).sort();
     var start = mtd.map(function (e) { return e.start; }).filter(String).sort()[0] || '';
     var end = mtd.map(function (e) { return e.end; }).filter(String).sort().reverse()[0] || '';
@@ -1195,7 +1208,7 @@ function personItems_(entries, resolve, today) {
     var meta = [count, dues[0] ? '次の期限' + dateLabel_(dues[0], today) : '', rank !== RANK.starting ? periodLabel_({ start: start, end: end }, today) : '',
       last && last < today ? '最後に動いた ' + dateLabel_(last, today) : ''].filter(String).join('・');
     return { name: g.name, rank: rank, role: roles.join('・'), src: g.mtd && g.share ? 'both' : g.mtd ? 'mtd' : 'share',
-      note: note, detail: detail, meta: meta, start: start, last: last, _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
+      note: note, detail: detail, meta: meta, start: start, last: last, stage: stage, next: nx ? nx.next : '', next_date: nx ? nx.next_date || '' : '', _sort: dues[0] || end || (rank === RANK.starting ? start : '') || '9999' };
   });
   return sortByRank_(items);
 }
@@ -1219,6 +1232,9 @@ function personCard_(base, entries, resolve, today) {
     items: items.map(function (it) {
       var o = { name: it.name, rank: it.rank, role: it.role, src: it.src, note: it.note, meta: it.meta, last: it.last || '' };
       if (it.detail) o.detail = it.detail;
+      if (it.stage) o.stage = it.stage;
+      if (it.next) { o.next = it.next; o.next_date = it.next_date || ''; }
+
       return o;
     }),
 
