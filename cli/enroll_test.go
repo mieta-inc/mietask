@@ -72,7 +72,9 @@ func TestEnrollByCode(t *testing.T) {
 	f := newFakeEnroll(t)
 	t.Setenv("MIETASK_RELAY_URL", f.srv.URL)
 
-	out, err := captureStdout(t, func() error { return runEnroll([]string{"start", "--slack-id", "u0new1", "--name", "新人 一郎", "--email", "ichiro@example.com"}) })
+	out, err := captureStdout(t, func() error {
+		return runEnroll([]string{"start", "--slack-id", "u0new1", "--name", "新人 一郎", "--email", "ichiro@example.com"})
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
