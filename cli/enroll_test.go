@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -82,8 +83,9 @@ func TestEnrollByCode(t *testing.T) {
 	if start["slack_id"] != "U0NEW1" || len(f.verifier) != 64 || start["secret"] != nil {
 		t.Fatalf("申し込みの中身が違う（合札そのものを送っていないか）: %v", start)
 	}
+	// Windows にはファイルの権限（0600）が無いので、そこでは残っているかだけを見る
 	st, err := os.Stat(enrollStatePath())
-	if err != nil || st.Mode().Perm() != 0o600 {
+	if err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
 		t.Fatalf("申し込みの控えが 0600 で残っていない: %v %v", st, err)
 	}
 
@@ -107,7 +109,7 @@ func TestEnrollByCode(t *testing.T) {
 	if string(b) != f.key() {
 		t.Fatalf("鍵が保存されていない: %q", b)
 	}
-	if fi, _ := os.Stat(tokenFile()); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(tokenFile()); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("鍵ファイルが 0600 でない: %v", fi.Mode())
 	}
 	if strings.Contains(out, "mietask2.") || strings.Contains(out, "kk") || !strings.Contains(out, "新人 一郎 さん専用") || !strings.Contains(out, "新しく登録") {
