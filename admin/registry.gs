@@ -444,7 +444,7 @@ var SHARE_MAX = 40; // 持ち案件の一覧（横断の仕事の多い人は数
 var SHARE_FRESH_DAYS = 7; // 持ち案件の一覧は、この日数のあいだは最新として出す（朝の実行が1日抜けても消さない）
 var HINT_MAX = 80;
 var NOTE_MAX = 40; // 案件ごとの「いま何をしているか」の一言
-var DETAIL_MAX = 150; // 案件ごとの詳細（ページではトグルで開く2〜3行）
+var DETAIL_MAX = 300; // 案件ごとの詳細（ページではトグルで開く）
 
 // 件数（残り・超過）。書かれていなければ null（古い版のミエタスクは件数を送らない）
 function shareCount_(v, label) {
