@@ -985,7 +985,7 @@ function loadDashboard(env, { email = '', props = { RELAY_URL: 'https://relay.ex
     },
     HtmlService: {
       createHtmlOutput: html => {
-        const o = { html, title: '', setTitle(t) { o.title = t; return o; }, addMetaTag() { return o; } };
+        const o = { html, title: '', favicon: '', setTitle(t) { o.title = t; return o; }, setFaviconUrl(u) { o.favicon = u; return o; }, addMetaTag() { return o; } };
         return o;
       },
     },
@@ -1008,6 +1008,8 @@ test('ダッシュボードのページ：見る人でタブが変わる。メ�
   assert.deepStrictEqual(mem.sent.map(s => [s.url, s.body]), [['https://relay.example/exec',
     { action: 'dashboard', secret: 'dash-secret', email: 'betsu@example.com', view: '', change: null, page_url: 'https://dash.example/exec' }]]);
   assert.deepStrictEqual(tabsOf(h), ['自分', '案件']);
+  assert.ok(h.includes('<span class="logo"><svg') && h.includes('<h1>ミエタスク</h1>'), 'ロゴが出ていない');
+  assert.strictEqual(mem.ctx.doGet({ parameter: {} }).favicon, 'https://raw.githubusercontent.com/mieta-inc/mietask/main/assets/icon-64.png');
   assert.ok(h.includes('<h3>別チーム</h3>') && h.includes('26順天高1ゼミ') && h.includes('PD・持っている案件 7件・これから 1件') && h.includes('相手待ち 1'), h);
   assert.ok(!h.includes('<img src=x') && h.includes('&lt;img src=x onerror=alert(1)&gt;案件'), '案件名を escape していない');
   assert.ok(!/段 部長|山田 太郎|data-tab="admin"|メンバーを足す/.test(h));
@@ -1454,7 +1456,7 @@ test('持ち案件の詳細：受け取って人の並びに渡し、ページ�
   seedDash(env);
   const k = issue(env, 7); // U4
   const share = items => call(env, { id: k.i, k: k.k, action: 'share', items });
-  assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: 'あ'.repeat(151) }]).error, 'bad_share');
+  assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: 'あ'.repeat(301) }]).error, 'bad_share');
   assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: 'https://x.example を見る' }]).error, 'bad_share');
   // < > はリンクやメンションの入口になるので断る（詳細も一言と同じ決まり）
   assert.strictEqual(share([{ name: '社内DX', state: '動いている', detail: '<手作業>の残る3か所' }]).error, 'bad_share');

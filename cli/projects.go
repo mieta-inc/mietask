@@ -26,7 +26,7 @@ const (
 	stateIdle      = "しばらく動きなし"
 	projectNameMax = 30
 	projectRoleMax = 12
-	projectDetail  = 150 // 詳細の上限（ページで2〜3行）
+	projectDetail  = 300 // 詳細の上限（ページでは開いたときに数行）
 )
 
 // 本人の Claude が付けられる状態（「しばらく動きなし」は日付から決まるので付けられない）

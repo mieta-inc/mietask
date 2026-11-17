@@ -30,6 +30,10 @@
  *      ドメインの入った形だと、ブラウザに複数の Google アカウントでログインしていても社内のアカウントで開く
  */
 
+// ミエタスクのアイコン（assets/icon.svg から白い下地を除いたもの。ロゴを差し替えたら、ここも差し替える）
+var LOGO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="34" height="34" aria-hidden="true"><g transform="translate(2 1) scale(0.86)"><path d="M5.17 127.75A5.11 5.11 0 0 1 0.12 121.84L18.71 4.86A7.05 7.05 0 0 1 32.17 3.21L61.29 71.86A2.94 2.94 0 0 0 66.71 71.86L95.83 3.21A7.05 7.05 0 0 1 109.29 4.86L127.88 121.84A5.11 5.11 0 0 1 122.83 127.75L92.45 127.75A8.04 8.04 0 0 1 84.59 121.4L81.87 108.78A2.41 2.41 0 0 0 79.52 106.88L78.54 106.88A2.25 2.25 0 0 0 76.82 107.67L66.3 120.13A3.01 3.01 0 0 1 61.7 120.13L51.18 107.67A2.25 2.25 0 0 0 49.46 106.88L48.48 106.88A2.41 2.41 0 0 0 46.13 108.78L43.41 121.4A8.04 8.04 0 0 1 35.55 127.75Z" fill="#E9BB00"/><ellipse cx="35.01" cy="80.1" rx="14.87" ry="20.71" fill="#fff"/><ellipse cx="43.14" cy="73.82" rx="10.8" ry="14.09" transform="rotate(17.64 43.14 73.82)" fill="#E9BB00"/><ellipse cx="92.85" cy="80.1" rx="14.87" ry="20.71" fill="#fff"/><ellipse cx="100.98" cy="73.82" rx="10.8" ry="14.09" transform="rotate(17.64 100.98 73.82)" fill="#E9BB00"/><rect x="14.51" y="54.1" width="41" height="50" rx="12" fill="none" stroke="#1A1A1A" stroke-width="6"/><path d="M21.71 54.1H48.31" stroke="#1A1A1A" stroke-width="7.800000000000001" stroke-linecap="round"/><rect x="72.35" y="54.1" width="41" height="50" rx="12" fill="none" stroke="#1A1A1A" stroke-width="6"/><path d="M79.55 54.1H106.15" stroke="#1A1A1A" stroke-width="7.800000000000001" stroke-linecap="round"/><path d="M55.51 64.1Q63.93 59.1 72.35 64.1" stroke="#1A1A1A" stroke-width="6" fill="none"/><path d="M14.51 64.1L12.8 61.1" stroke="#1A1A1A" stroke-width="6" stroke-linecap="round" fill="none"/><path d="M113.35 64.1L115.2 61.1" stroke="#1A1A1A" stroke-width="6" stroke-linecap="round" fill="none"/></g><g transform="translate(119 66) rotate(135)"><path d="M0 -8.0H61L70 0L61 8.0H0Z" fill="#fff" stroke="#fff" stroke-width="7" stroke-linejoin="round"/></g><g transform="translate(119 66) rotate(135)"><rect x="0" y="-8.0" width="7" height="16" rx="2" fill="#F2A7B8" stroke="#1A1A1A" stroke-width="2"/><rect x="6" y="-8.0" width="4" height="16" fill="#BFC3C7" stroke="#1A1A1A" stroke-width="2"/><rect x="10" y="-8.0" width="51" height="16" fill="#1A1A1A" stroke="#1A1A1A" stroke-width="2"/><path d="M10 -2.67H61" stroke="#3A3A3A" stroke-width="1.6"/><path d="M61 -8.0L70 0L61 8.0Z" fill="#F3D9A4" stroke="#1A1A1A" stroke-width="2" stroke-linejoin="round"/><path d="M66.58 -3.04L70 0L66.58 3.04Z" fill="#1A1A1A"/></g></svg>';
+var FAVICON_URL = 'https://raw.githubusercontent.com/mieta-inc/mietask/main/assets/icon-64.png';
+
 var TAB_LABEL = { members: 'メンバー', projects: '案件', self: '自分', admin: '管理' };
 var STATE_LABEL = ['期限超過あり', '相手待ち・確認待ち', '動いている', '手伝い', 'しばらく動きなし', 'これから'];
 
@@ -55,6 +59,7 @@ function doGet(e) {
   }
   return HtmlService.createHtmlOutput(html)
     .setTitle('ミエタスク')
+    .setFaviconUrl(FAVICON_URL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
@@ -200,7 +205,7 @@ function renderPage_(v, want) {
     return '<section role="tabpanel" id="' + t + '"' + (t === first ? '' : ' hidden') + '>' + make[t](v) + '</section>';
   }).join('');
   var problems = (v.problems || []).length ? '<div class="problems">' + v.problems.map(function (p) { return '<p>' + esc_(p) + '</p>'; }).join('') + '</div>' : '';
-  return page_('<header class="top"><h1>ミエタスク</h1><span>' + esc_(v.viewer.name) + '　' + md_(v.today) + '時点</span></header>' +
+  return page_('<header class="top">' + brand_() + '<span>' + esc_(v.viewer.name) + '　' + md_(v.today) + '時点</span></header>' +
     problems + nav + panels +
     '<footer>出どころは MTD（Notion）と、各自のミエタスクが毎朝送る案件ごとの状態と一言です。タスクの題名・メールや DM の中身は入っていません。</footer>' +
     (v.admin ? '<dialog id="edit"><h2></h2><div class="body"></div><p class="err" role="alert"></p>' +
@@ -265,8 +270,10 @@ function adminBody_(a) {
     '<script type="application/json" id="admin-data">' + JSON.stringify(data).replace(/</g, '\\u003c') + '</script>';
 }
 
+function brand_() { return '<span class="logo">' + LOGO_SVG + '</span><h1>ミエタスク</h1>'; }
+
 function messagePage_(title, body) {
-  return page_('<header class="top"><h1>ミエタスク</h1></header><div class="message"><h2>' + esc_(title) + '</h2><p>' + esc_(body) + '</p></div>');
+  return page_('<header class="top">' + brand_() + '</header><div class="message"><h2>' + esc_(title) + '</h2><p>' + esc_(body) + '</p></div>');
 }
 
 function page_(body) {
@@ -498,34 +505,38 @@ var ADMIN_JS = `
 `;
 
 var CSS = [
-  ':root{--bg:#fafaf8;--panel:#fff;--ink:#1d1d1b;--muted:#6b6b66;--faint:#9a9993;--line:#e7e6e1;--soft:#f2f1ed;',
-  '--red:#b3261e;--red-bg:#fbeceb;--amber:#8a5a00;--amber-bg:#fbf1dc;--blue:#2457a6;--accent:#2457a6}',
-  '@media (prefers-color-scheme:dark){:root{--bg:#161615;--panel:#1d1d1b;--ink:#ecebe6;--muted:#a3a29b;--faint:#7c7b75;--line:#2f2e2b;--soft:#262624;',
-  '--red:#ef8a7f;--red-bg:#3a2321;--amber:#e8c06a;--amber-bg:#3a3020;--blue:#8db4ef;--accent:#8db4ef}}',
+  // ロゴの黄（#E9BB00）と黒を基調にする。状態の色（期限超過の赤・相手待ちの橙・これからの青）は黄と混ざらない色にする
+  ':root{--bg:#fbfaf6;--panel:#fff;--ink:#1a1a1a;--muted:#5d5b55;--faint:#99968c;--line:#e9e5d9;--soft:#f6f2e6;',
+  '--brand:#e9bb00;--brand-soft:#fff4c2;--red:#c0392b;--red-bg:#fbeceb;--amber:#c2650f;--amber-bg:#fdecd9;--blue:#2457a6;--accent:#1a1a1a}',
+  '@media (prefers-color-scheme:dark){:root{--bg:#141413;--panel:#1d1d1b;--ink:#f1eee6;--muted:#b3b0a7;--faint:#85827a;--line:#302e29;--soft:#26241f;',
+  '--brand:#e9bb00;--brand-soft:#3b3214;--red:#ef8a7f;--red-bg:#3a2321;--amber:#f0a35e;--amber-bg:#3b2a1a;--blue:#8db4ef;--accent:#f1eee6}}',
   '*{box-sizing:border-box}body{margin:0 auto;max-width:1080px;padding:20px 16px 40px;background:var(--bg);color:var(--ink);',
   'font:14px/1.6 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}',
-  '.top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.top h1{font-size:18px;font-weight:600;margin:0}.top span{color:var(--muted);font-size:13px}',
+  'html{border-top:4px solid var(--brand)}.top{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.logo{display:inline-flex;width:34px;height:34px}',
+  '.top h1{font-size:20px;font-weight:800;letter-spacing:.02em;margin:0}.top span{color:var(--muted);font-size:13px;margin-left:4px}',
+  // 暗い画面ではロゴの黒い線が沈むので、白い下地に載せる
+  '@media (prefers-color-scheme:dark){.logo{background:#fff;border-radius:8px;padding:2px}}',
   'nav{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:14px 0 18px}',
   'nav button{font:inherit;background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:8px 14px;color:var(--muted);cursor:pointer}',
-  'nav button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ink)}',
+  'nav button[aria-selected=true]{color:var(--ink);border-bottom:3px solid var(--brand);font-weight:700}nav button:hover{color:var(--ink)}',
   '.bar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 8px}',
   '.lead{color:var(--muted);font-size:12px;margin:0 0 8px}.bar .lead{margin:0}.filter{font-size:13px;color:var(--muted);display:flex;gap:6px;align-items:center}',
   'select,input[type=text]{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 8px}',
   '.pickbar{display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap;margin:0 0 14px}.pills{display:flex;gap:6px;flex-wrap:wrap;flex:1}',
   '.pill{border-radius:999px;padding:4px 14px;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}',
-  '.pill[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:var(--bg)}.pill:hover{border-color:var(--faint)}',
-  '.pill .n{display:inline-block;margin-left:6px;min-width:18px;padding:0 6px;border-radius:999px;font-size:11px;background:var(--red-bg);color:var(--red);text-align:center}',
+  '.pill[aria-pressed=true]{background:var(--ink);border-color:var(--ink);color:var(--bg)}.pill:hover{border-color:var(--ink)}',
+  '.pill .n{display:inline-block;margin-left:6px;min-width:18px;padding:0 6px;border-radius:999px;font-size:11px;background:var(--red);color:#fff;text-align:center}',
   '.phead{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 2px}.phead h3{margin:0;font-size:17px;font-weight:600}.sub{color:var(--faint);font-size:12px}',
   '.flag{font-size:12px;padding:1px 8px;border-radius:999px}.f0{background:var(--red-bg);color:var(--red)}.f1{background:var(--amber-bg);color:var(--amber)}',
   '.sortbar{display:flex;align-items:center;gap:8px;margin:10px 0 10px}.sortbar .lbl{font-size:12px;color:var(--muted)}',
   '.seg{display:inline-flex;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:var(--panel)}',
-  '.seg button{border:0;border-radius:0;font-size:12px;padding:3px 12px;background:none;color:var(--muted)}.seg button[aria-pressed=true]{background:var(--soft);color:var(--ink);font-weight:600}',
-  '.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}',
+  '.seg button{border:0;border-radius:0;font-size:12px;padding:3px 12px;background:none;color:var(--muted)}.seg button[aria-pressed=true]{background:var(--brand-soft);color:var(--ink);font-weight:700}',
+  '.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;align-items:start}',
   '.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;font-size:13px;min-width:0}',
   '.card.s0{box-shadow:inset 3px 0 0 var(--red)}.card.s1{box-shadow:inset 3px 0 0 var(--amber)}.card.s5{box-shadow:inset 3px 0 0 var(--blue)}.card.s4{opacity:.6}',
   '.ct{display:flex;justify-content:space-between;align-items:baseline;gap:8px}.pn{font-weight:600;overflow-wrap:anywhere}.role{color:var(--faint);font-size:12px;white-space:nowrap}',
   '.note{color:var(--muted);overflow-wrap:anywhere}.meta{color:var(--faint);font-size:12px}.who{font-size:12px;overflow-wrap:anywhere}.who .role{margin-left:2px}',
-  '.card details{margin-top:2px}.card summary{cursor:pointer;font-size:12px;color:var(--accent);list-style:none}.card summary::-webkit-details-marker{display:none}',
+  '.card details{margin-top:2px}.card summary{cursor:pointer;font-size:12px;color:var(--ink);list-style:none;text-decoration:underline;text-decoration-color:var(--brand);text-decoration-thickness:2px;text-underline-offset:3px;align-self:flex-start}.card summary::-webkit-details-marker{display:none}',
   '.card summary::after{content:" ▾"}.card details[open] summary::after{content:" ▴"}',
   '.detail{margin:4px 0 0;padding:6px 9px;background:var(--soft);border-radius:6px;color:var(--ink);font-size:12.5px;line-height:1.6}',
   '.notes{margin:4px 0 0;color:var(--faint);font-size:12px}.foot{margin:10px 0 0;color:var(--faint);font-size:11px}',
@@ -533,7 +544,7 @@ var CSS = [
   '.problems{background:var(--amber-bg);color:var(--amber);border-radius:8px;padding:8px 12px;margin:10px 0;font-size:13px}.problems p{margin:2px 0}',
   '.subnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}',
   '.subnav button{font:inherit;font-size:13px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 12px;color:var(--muted);cursor:pointer}',
-  '.subnav button[aria-selected=true]{color:var(--ink);border-color:var(--ink)}',
+  '.subnav button[aria-selected=true]{color:var(--ink);border-color:var(--ink);background:var(--brand-soft)}',
   '.scroll{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:10px}table{border-collapse:collapse;width:100%;font-size:13px}',
   'th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);white-space:nowrap}tr:last-child td{border-bottom:0}th{color:var(--muted);font-weight:500}',
   'tr.stopped td{color:var(--faint)}td.warn{color:var(--amber)}td.acts{text-align:right}',

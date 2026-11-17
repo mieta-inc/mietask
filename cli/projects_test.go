@@ -144,7 +144,7 @@ func TestProjectDetail(t *testing.T) {
 	if !strings.HasPrefix(b.Projects[0].Detail, "申請から承認まで") {
 		t.Fatalf("詳細が残っていない: %+v", b.Projects[0])
 	}
-	if _, err := runUpdate(t, `{"touched":[{"name":"x","state":"動いている","detail":"`+strings.Repeat("あ", 151)+`"}]}`); err == nil {
+	if _, err := runUpdate(t, `{"touched":[{"name":"x","state":"動いている","detail":"`+strings.Repeat("あ", 301)+`"}]}`); err == nil {
 		t.Error("長すぎる詳細を受け付けた")
 	}
 	if _, err := runUpdate(t, `{"touched":[{"name":"x","state":"動いている","detail":"<@U1> に確認"}]}`); err == nil {
@@ -157,7 +157,7 @@ func TestProjectDetail(t *testing.T) {
 	// 40件・詳細つきでも、1通の上限を超えないように分ける（案件と詳細は切り離さない）
 	var items []shareItem
 	for i := 0; i < 40; i++ {
-		items = append(items, shareItem{Name: fmt.Sprintf("案件%02d", i), State: "動いている", Note: strings.Repeat("い", 40), Detail: strings.Repeat("う", 150)})
+		items = append(items, shareItem{Name: fmt.Sprintf("案件%02d", i), State: "動いている", Note: strings.Repeat("い", 40), Detail: strings.Repeat("う", 300)})
 	}
 	parts := splitPreview(sharePreview(items))
 	if len(parts) < 2 {
