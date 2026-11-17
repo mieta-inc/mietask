@@ -325,12 +325,12 @@ function seed(env) {
   };
   put('メンバー', [
     { '名前': '山田 太郎', 'Slack ID': 'U1', 'チーム': 'pm1', '状態': '有効' },
-    { '名前': '管理 花子', 'Slack ID': 'UM', 'チーム': 'pm', 'ロール': '管理者', '状態': '有効' },
+    { '名前': '管理 花子', 'Slack ID': 'UM', 'チーム': 'pm', '状態': '有効' },
     { '名前': '別チーム', 'Slack ID': 'U2', 'チーム': 'pd', '状態': '有効' },
     { '名前': '退職 次郎', 'Slack ID': 'U9', 'チーム': 'pm2', '状態': '有効' },
   ]);
   put('チーム', [
-    { 'チームID': 'pm', '表示名': 'PM' },
+    { 'チームID': 'pm', '表示名': 'PM', '管理者': 'UM' },
     { 'チームID': 'pm1', '表示名': 'PM1', '親チーム': 'pm' },
     { 'チームID': 'pm2', '表示名': 'PM2', '親チーム': 'PM' },
     { 'チームID': 'pd', '表示名': 'PD' },
@@ -628,7 +628,7 @@ function seedDash(env) {
   put({ '名前': 'ひも付けなし', 'Slack ID': 'U3', 'チーム': 'pd', '状態': '有効' });
   put({ '名前': 'MTDに無い人', 'Slack ID': 'U4', 'チーム': 'pd', '状態': '有効', 'Notion ユーザー': 'user://' + NU(4) });
   put({ '名前': '停止の人', 'Slack ID': 'U5', 'チーム': 'pd', '状態': '停止', 'Notion ユーザー': 'user://' + NU(5) });
-  put({ '名前': '段 部長', 'Slack ID': 'UD', 'チーム': 'pd', 'ロール': '管理者', '状態': '有効', 'メール': 'dan@example.com' });
+  put({ '名前': '段 部長', 'Slack ID': 'UD', 'チーム': 'pd', '状態': '有効', 'メール': 'dan@example.com' });
   put({ '名前': '役員 一郎', 'Slack ID': 'UE', 'チーム': 'all', 'ロール': '役員', '状態': '有効', 'メール': 'exec@example.com' });
   put({ '名前': 'システム 管理', 'Slack ID': 'UA', 'チーム': 'all', 'ロール': 'メンバー, システム管理者', '状態': '有効', 'メール': 'sys@example.com' });
   const emails = { U1: 'yamada@example.com', UM: 'kanri@example.com', U2: 'betsu@example.com', U4: 'nomtd@example.com', U5: 'stopped@example.com' };
@@ -637,6 +637,7 @@ function seedDash(env) {
   const th = teams.cells[0];
   teams.appendRow(th.map(h => ({ 'チームID': 'all', '表示名': '全社' })[h] ?? ''));
   [1, 4].forEach(r => { teams.cells[r][th.indexOf('親チーム')] = 'all'; }); // pm・pd の親を全社に
+  teams.cells[4][th.indexOf('管理者')] = 'UD'; // 段 部長は pd の管理者
   const st = env.ss.getSheetByName('設定');
   st.cells.forEach(r => {
     if (r[0] === 'notion_projects') r[1] = 'collection://proj';
@@ -713,7 +714,7 @@ test('ダッシュボード：メンバーは自分の分だけ。案件を出�
   assert.deepStrictEqual(q.body.filter.or.map(f => f.property), ['CC担当', 'PM担当', 'SP担当', 'プロジェクトリード', '連携メンバー']);
 });
 
-test('ダッシュボード：ロールで見える範囲が決まる。管理者は自分のチームとその下、役員は全員。横のチームは見えない', () => {
+test('ダッシュボード：見える範囲はチームの管理者欄とロールで決まる。管理者はそのチームとその下、役員は全員。横のチームは見えない', () => {
   const env = load();
   seedDash(env);
   const d = dash(env, 'dan@example.com'); // pd の管理者
@@ -731,14 +732,17 @@ test('ダッシュボード：ロールで見える範囲が決まる。管理�
   assert.deepStrictEqual(e.teams[0].members.sort(), ['U1', 'U2', 'U3', 'U4', 'U9', 'UA', 'UD', 'UE', 'UM']);
   assert.strictEqual(cardOf(e, 'U3').notes, 'MTD未連携（システム管理者が対応）・ミエタスク未着');
 
-  // ロールが無ければ（チームに属していても）自分の分だけ。ロールを外せば、その時点から見えなくなる
-  setCell(env, 'メンバー', 9, 'ロール', '');
+  // チームの管理者欄から外せば（チームに属していても）自分の分だけ。外した時点から見えなくなる
+  setCell(env, 'チーム', 5, '管理者', '');
   const gone = dash(env, 'dan@example.com');
   assert.deepStrictEqual([gone.teams, gone.people, gone.self.slack_id], [[], [], 'UD']);
-  // 部門長：部門（親チーム）の管理者にすると、下のチームもタブになる
-  setCell(env, 'メンバー', 9, 'ロール', '管理者');
-  setCell(env, 'メンバー', 9, 'チーム', 'all');
+  // 部門長：部門（親チーム）の管理者にすると、下のチームもタブになる。管理者がそのチームに属している必要はない
+  setCell(env, 'チーム', 6, '管理者', 'UD');
   assert.deepStrictEqual(dash(env, 'dan@example.com').teams.map(t => t.id), ['all', 'pm', 'pm1', 'pm2', 'pd']);
+  // 以前の「管理者」のロールが残っていても、管理者欄に移したあとは見える範囲に効かない
+  setCell(env, 'チーム', 6, '管理者', '');
+  setCell(env, 'メンバー', 9, 'ロール', '管理者');
+  assert.deepStrictEqual(dash(env, 'dan@example.com').teams, []);
 });
 
 test('ダッシュボード：システム管理者は管理のタブで全員の動作状況だけ。案件の中身は見えない', () => {
@@ -771,26 +775,37 @@ test('ダッシュボード：システム管理者は管理のタブで全員�
   }
 });
 
-test('ロールへの移しかえ：以前の管理者列と system_admins から、ロールが空の人にだけ入れる', () => {
+test('管理者の移しかえ：ロールの管理者を「チーム」の管理者欄に移す。移す前はロールで決め、管理者欄の古い値は効かない', () => {
   const env = load();
-  seed(env);
-  const teams = env.ss.getSheetByName('チーム');
-  teams.cells[0].push('管理者');
-  teams.cells.slice(1).forEach(r => r.push(''));
-  teams.cells[4][teams.cells[0].indexOf('管理者')] = 'U2, UX'; // pd（U2 は pd の人。UX は台帳にいない）
-  teams.cells[2][teams.cells[0].indexOf('管理者')] = 'U1'; // pm1（U1 は pm1）
-  teams.cells[1][teams.cells[0].indexOf('管理者')] = 'U1'; // pm（U1 は pm に入っていない）
+  seedDash(env);
+  // 移す前の台帳（管理者をロールで付けていた）。管理者欄には以前の古い値が残っている
+  delete env.props.MANAGERS_ON_TEAMS;
+  setCell(env, 'チーム', 2, '管理者', 'U2'); // pm に古い値（U2）
+  setCell(env, 'チーム', 5, '管理者', '');
+  setCell(env, 'メンバー', 3, 'ロール', '管理者'); // UM（pm）
+  setCell(env, 'メンバー', 9, 'ロール', '管理者'); // UD（pd）
+  setCell(env, 'メンバー', 2, 'ロール', '管理者'); // U1（pm1）
+  setCell(env, 'メンバー', 2, 'チーム', 'pm1, nope');
   env.ss.getSheetByName('設定').appendRow(['system_admins', 'U9']);
-  setCell(env, 'メンバー', 3, 'ロール', '管理者'); // UM は入っているのでそのまま
+  assert.deepStrictEqual(dash(env, 'dan@example.com').teams.map(t => t.id), ['pd'], '移す前はロールで決める');
+  assert.deepStrictEqual(dash(env, 'betsu@example.com').teams, [], '管理者欄の古い値が効いている');
+
   env.ui.alerts.length = 0;
   env.ctx.menuSetupSheets();
   const msg = env.ui.alerts.pop();
-  assert.deepStrictEqual([2, 3, 4, 5].map(r => cell(env, 'メンバー', r, 'ロール')), ['管理者', '管理者', '管理者', 'システム管理者']);
-  assert.match(msg, /山田 太郎：管理していた pm が「チーム」に入っていません/);
-  assert.match(msg, /UX：「メンバー」に行がありません/);
+  assert.strictEqual(env.props.MANAGERS_ON_TEAMS, '1');
+  assert.deepStrictEqual([2, 3, 5].map(r => cell(env, 'チーム', r, '管理者')), ['UM', 'U1', 'UD']);
+  assert.deepStrictEqual([2, 3, 9].map(r => cell(env, 'メンバー', r, 'ロール')), ['', '', '']);
+  assert.strictEqual(cell(env, 'メンバー', 5, 'ロール'), 'システム管理者', 'system_admins から移していない');
+  assert.match(msg, /チーム pm：管理 花子 を管理者に（前の値「U2」は使いません）/);
+  assert.match(msg, /山田 太郎：チーム「nope」が「チーム」シートに無い/);
+  // 移したあとは管理者欄で決まる（見え方は移す前と同じ）
+  assert.deepStrictEqual(dash(env, 'dan@example.com').teams.map(t => t.id), ['pd']);
+  assert.deepStrictEqual(dash(env, 'kanri@example.com').teams.map(t => t.id), ['pm', 'pm1', 'pm2']);
   // もう一度押しても変わらない
   env.ctx.menuSetupSheets();
-  assert.ok(!/山田 太郎/.test(env.ui.alerts.pop()));
+  assert.ok(!/管理者を「チーム」/.test(env.ui.alerts.pop()));
+  assert.deepStrictEqual([2, 3, 5].map(r => cell(env, 'チーム', r, '管理者')), ['UM', 'U1', 'UD']);
 });
 
 test('ダッシュボード：合言葉が違えば断る。台帳に無い人・停止の人には何も返さない', () => {
@@ -1033,6 +1048,11 @@ test('ダッシュボードのページ：見る人でタブが変わる。メ�
   const top = sys.page();
   assert.deepStrictEqual(tabsOf(top), ['自分', '管理']);
   assert.ok(top.includes('メンバーを足す') && top.includes('メンバー, システム管理者') && top.includes('鍵を送る'), top);
+  // チームの表に管理者を名前で出す。ロールの選択肢に管理者は出さない（チームで選ぶ）
+  const teamTable = top.match(/data-subpanel="a-teams"[\s\S]*?<\/table>/)[0];
+  assert.ok(teamTable.includes('<th>管理者</th>') && teamTable.includes('<td>pd</td><td>PD</td><td>all</td><td>段 部長</td>'), teamTable);
+  const adminData = JSON.parse(top.match(/<script type="application\/json" id="admin-data">([\s\S]*?)<\/script>/)[1].replace(/\\u003c/g, '<'));
+  assert.deepStrictEqual([adminData.roles, adminData.managers_on_teams], [['役員', 'システム管理者'], true]);
   assert.ok(!top.includes('26順天高1ゼミ'), '管理のタブに案件の中身が出ている');
   // 管理台帳へはシステム管理者だけが飛べる
   assert.ok(top.includes('<a class="ledger" href="https://docs.google.com/spreadsheets/d/LEDGER/edit" target="_blank" rel="noopener">'), '管理台帳へのリンクが無い');
@@ -1071,18 +1091,18 @@ test('台帳の変更：システム管理者はメンバーのチーム・ロ�
   seedDash(env);
   const r1 = memberRow(env, 'U1');
   const res = change(env, 'sys@example.com', { kind: 'member', slack_id: 'U1',
-    set: { teams: ['PM1', 'pd'], roles: ['メンバー', '管理者'], status: '有効', email: 'Yamada2@Example.com' },
+    set: { teams: ['PM1', 'pd'], roles: ['メンバー', '役員'], status: '有効', email: 'Yamada2@Example.com' },
     base: { teams: ['pm1'], roles: ['メンバー'], status: '有効', email: 'yamada@example.com' } });
   assert.ok(res.ok, JSON.stringify(res));
   assert.strictEqual(res.changed, 3);
-  assert.deepStrictEqual(['チーム', 'ロール', 'メール'].map(h => cell(env, 'メンバー', r1, h)), ['pm1, pd', '管理者', 'yamada2@example.com']);
+  assert.deepStrictEqual(['チーム', 'ロール', 'メール'].map(h => cell(env, 'メンバー', r1, h)), ['pm1, pd', '役員', 'yamada2@example.com']);
   assert.deepStrictEqual(res.log.map(l => [l['変えた人'], l['対象'], l['項目'], l['前'], l['後']]), [
     ['システム 管理（sys@example.com）', '山田 太郎（U1）', 'チーム', 'pm1', 'pm1, pd'],
-    ['システム 管理（sys@example.com）', '山田 太郎（U1）', 'ロール', '', '管理者'],
+    ['システム 管理（sys@example.com）', '山田 太郎（U1）', 'ロール', '', '役員'],
     ['システム 管理（sys@example.com）', '山田 太郎（U1）', 'メール', 'yamada@example.com', 'yamada2@example.com'],
   ].reverse());
   // 変えた時点から、見える範囲が変わる
-  assert.deepStrictEqual(dash(env, 'yamada2@example.com').teams.map(t => t.id), ['pm1', 'pd']);
+  assert.deepStrictEqual(dash(env, 'yamada2@example.com').teams.map(t => t.id), ['all', 'pm', 'pm1', 'pm2', 'pd']);
   assert.strictEqual(dash(env, 'yamada@example.com').viewer, null);
 });
 
@@ -1100,6 +1120,7 @@ test('台帳の変更：ページを開いたあとにシートが直されて�
   const bad = [
     [{ teams: ['pm9'] }, /pm9.*ありません/],
     [{ roles: ['リーダー'] }, /リーダー.*使えません/],
+    [{ roles: ['管理者'] }, /「チーム」の管理者で決めます/],
     [{ status: '休職' }, /有効.*停止/],
     [{ email: '=HYPERLINK("x")@a.b' }, /先頭/],
     [{ email: 'not-mail' }, /メールの形/],
@@ -1135,7 +1156,7 @@ test('台帳の変更：システム管理者が1人もいなくなる変更は�
   assert.strictEqual(cell(env, 'メンバー', rA, 'ロール'), '');
 });
 
-test('台帳の変更：チームを足し、表示名と親チームを変えられる。輪になる親・無いチームは断る', () => {
+test('台帳の変更：チームを足し、表示名・親チーム・管理者を変えられる。輪になる親・無いチーム・台帳にいない管理者は断る', () => {
   const env = load();
   seedDash(env);
   assert.ok(change(env, 'sys@example.com', { kind: 'add_team', id: 'pm3', name: 'PM3', parent: 'PM' }).ok);
@@ -1155,10 +1176,36 @@ test('台帳の変更：チームを足し、表示名と親チームを変え�
   }
   const r = change(env, 'sys@example.com', { kind: 'team', id: 'pd', set: { name: '企画開発', parent: '' }, base: { name: 'PD', parent: 'all' } });
   assert.ok(r.ok, JSON.stringify(r));
-  assert.deepStrictEqual(r.teams.find(t => t.id === 'pd'), { id: 'pd', name: '企画開発', parent: '' });
+  assert.deepStrictEqual(r.teams.find(t => t.id === 'pd'), { id: 'pd', name: '企画開発', parent: '', managers: ['UD'] });
   // pd は全社の下から外れたので、役員には一番上のチームとして出る（並びは「チーム」シートの順）
   assert.deepStrictEqual(dash(env, 'exec@example.com').teams.map(t => t.id), ['pd', 'all', 'pm', 'pm1', 'pm2', 'pm3']);
   assert.strictEqual(change(env, 'sys@example.com', { kind: 'team', id: 'pd', set: { name: 'x' }, base: { name: 'PD' } }).error, 'conflict');
+
+  // 管理者はチームの管理者欄で決める。新しく管理者になった人にはページの案内が届き、記録には名前で残る
+  env.props.DASHBOARD_URL = 'https://script.google.com/a/macros/example.com/s/DASH/exec';
+  const mg = change(env, 'sys@example.com', { kind: 'team', id: 'pm1', set: { managers: ['U1', 'UM'] }, base: { managers: [] } });
+  assert.ok(mg.ok, JSON.stringify(mg));
+  assert.strictEqual(cell(env, 'チーム', 3, '管理者'), 'U1, UM');
+  assert.deepStrictEqual(mg.log.slice(0, 1).map(l => [l['対象'], l['項目'], l['前'], l['後']]), [['チーム pm1', '管理者', '', '山田 太郎, 管理 花子']]);
+  assert.match(mg.message, /山田 太郎 さんにページの案内を DM で送りました/);
+  assert.match(env.slack.dms.U1.slice(-1)[0].text, /ページが見られるようになりました\*（PM1 の管理者）/);
+  assert.deepStrictEqual(mg.teams.find(t => t.id === 'pm1').managers, ['U1', 'UM']);
+  assert.deepStrictEqual(dash(env, 'yamada@example.com').teams.map(t => t.id), ['pm1']);
+  for (const [c, why] of [
+    [{ kind: 'team', id: 'pm1', set: { managers: ['UX'] }, base: { managers: ['U1', 'UM'] } }, /UX」は台帳にいません/],
+    [{ kind: 'team', id: 'pm1', set: { managers: ['U5'] }, base: { managers: ['U1', 'UM'] } }, /停止の人 さんは停止している/],
+    [{ kind: 'add_team', id: 'pm5', managers: ['UX'] }, /台帳にいません/],
+  ]) {
+    const ng = change(env, 'sys@example.com', c);
+    assert.strictEqual(ng.error, 'bad_change', JSON.stringify(c));
+    assert.match(ng.message, why);
+  }
+  assert.strictEqual(change(env, 'sys@example.com', { kind: 'team', id: 'pm1', set: { managers: [] }, base: { managers: [] } }).error, 'conflict');
+  // チームを足すときに管理者も選べる
+  assert.ok(change(env, 'sys@example.com', { kind: 'add_team', id: 'pm6', name: 'PM6', parent: 'pm', managers: ['U2'] }).ok);
+  const last = env.ss.getSheetByName('チーム').cells.slice(-1)[0];
+  assert.strictEqual(last[env.ss.getSheetByName('チーム').cells[0].indexOf('管理者')], 'U2');
+  assert.deepStrictEqual(dash(env, 'betsu@example.com').teams.map(t => t.id), ['pm6']);
 });
 
 test('台帳の変更：ページの保存から窓口まで通る。表を作り直した HTML を返し、データの中で script を閉じさせない', () => {
@@ -1348,18 +1395,18 @@ test('案件のページ：人の並びに一言と件数を出し、案件の�
   assert.ok(page.includes('data-merge') && page.includes('案件の別名'));
 });
 
-test('管理のタブ：人を足し、鍵を DM で送り、無効にできる。鍵はページに返さない。管理者・役員になった人にはページの案内が届く', () => {
+test('管理のタブ：人を足し、鍵を DM で送り、無効にできる。鍵はページに返さない。役員になった人にはページの案内が届く', () => {
   const env = load();
   seedDash(env);
   env.props.DASHBOARD_URL = 'https://script.google.com/a/macros/example.com/s/DASH/exec';
   const add = change(env, 'sys@example.com', { kind: 'add_member', name: '新井 花', slack_id: 'u0new0001', email: 'Arai@Example.com',
-    teams: ['PD'], roles: ['管理者'], notion_user: 'https://www.notion.so/' + 'a'.repeat(32) });
+    teams: ['PD'], roles: ['役員'], notion_user: 'https://www.notion.so/' + 'a'.repeat(32) });
   assert.ok(add.ok, JSON.stringify(add));
   const row = memberRow(env, 'U0NEW0001');
   assert.deepStrictEqual(['名前', 'メール', 'チーム', 'ロール', '状態', 'Notion ユーザー', '鍵'].map(h => cell(env, 'メンバー', row, h)),
-    ['新井 花', 'arai@example.com', 'pd', '管理者', '有効', 'user://' + 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '']);
+    ['新井 花', 'arai@example.com', 'pd', '役員', '有効', 'user://' + 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '']);
   assert.match(add.message, /新井 花 さんにページの案内を DM で送りました/);
-  assert.match(env.slack.dms.U0NEW0001.slice(-1)[0].text, /ページが見られるようになりました\*（管理者）[\s\S]*DASH\/exec/);
+  assert.match(env.slack.dms.U0NEW0001.slice(-1)[0].text, /ページが見られるようになりました\*（役員）[\s\S]*DASH\/exec/);
   assert.deepStrictEqual(add.health.find(h => h.slack_id === 'U0NEW0001').state, '鍵なし');
   // 足すときの誤り
   for (const [c, why] of [
@@ -1398,7 +1445,7 @@ test('管理のタブ：人を足し、鍵を DM で送り、無効にできる�
   assert.deepStrictEqual(log.map(l => l[1]), ['追加', '鍵', '鍵']);
   assert.ok(!JSON.stringify(log).includes('mietask2.'));
 
-  // ロールを付けたときも案内が届く。もともと管理者だった人には送らない
+  // ロールを付けたときも案内が届く。もともと役員だった人には送らない
   const before = (env.slack.dms.U2 || []).length;
   const up = change(env, 'sys@example.com', { kind: 'member', slack_id: 'U2', set: { roles: ['役員'] }, base: { roles: [] } });
   assert.ok(up.ok && /別チーム さんにページの案内/.test(up.message), JSON.stringify(up));

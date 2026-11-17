@@ -2,13 +2,13 @@
  * ミエタスク ダッシュボード（Google Apps Script・ウェブアプリ）
  *
  * 「人がいま何をしていて、どこで詰まっているか」を見るページ。1つの URL を全員に配り、見る人によって出るタブと中身が変わる。
- * 見える範囲は管理台帳の「メンバー」シートのロールで、窓口（admin/registry.gs）が決める。
+ * 見える範囲は管理台帳の「チーム」シートの管理者欄と「メンバー」シートのロールで、窓口（admin/registry.gs）が決める。
  * このスクリプトは見ている人のメールを確かめて窓口に問い合わせ、返ってきたものを並べるだけ。
  *
  *   - メンバー: 「自分」（管理者に見えている内容）と、自分の関わる「案件」
- *   - 管理者: 「メンバー」（自分の「チーム」のチームと、その下のチームの人）・「案件」・「自分」
+ *   - 管理者（「チーム」の管理者欄にいる人）: 「メンバー」（そのチームと、その下のチームの人）・「案件」・「自分」
  *   - 役員: 全員
- *   - システム管理者: 「管理」のタブで、全員の動作状況と台帳の操作（人を足す・鍵を送る・チーム・ロール・案件の別名）。
+ *   - システム管理者: 「管理」のタブで、全員の動作状況と台帳の操作（人を足す・鍵を送る・チームと管理者・ロール・案件の別名）。
  *     案件の中身は見えない。変えたものは窓口がもう一度ロールを確かめてから台帳に書き、「変更の記録」シートに残す
  *
  * 案件は判断の材料として添えるもの。並びの主役は人で、案件のタブは「同じ案件に誰が関わっているか」を確かめる補助。
@@ -277,8 +277,11 @@ function adminBody_(a) {
   }).join('');
   var count = {};
   rows.forEach(function (h) { h.teams.forEach(function (t) { count[t.toLowerCase()] = (count[t.toLowerCase()] || 0) + 1; }); });
+  var nameOf = {};
+  rows.forEach(function (h) { nameOf[h.slack_id] = h.name; });
   var teams = (a.teams || []).map(function (t) {
-    return '<tr><td>' + esc_(t.id) + '</td><td>' + esc_(t.name) + '</td><td>' + esc_(t.parent) + '</td><td>' + (count[t.id.toLowerCase()] || 0) + '人</td>' +
+    var mgr = (t.managers || []).map(function (u) { return nameOf[u] || u + '（台帳にいない）'; }).join('、');
+    return '<tr><td>' + esc_(t.id) + '</td><td>' + esc_(t.name) + '</td><td>' + esc_(t.parent) + '</td><td>' + esc_(mgr) + '</td><td>' + (count[t.id.toLowerCase()] || 0) + '人</td>' +
       '<td class="acts"><button type="button" class="small" data-team="' + esc_(t.id) + '">変える</button></td></tr>';
   }).join('');
   var aliases = (a.aliases || []).map(function (x) {
@@ -296,7 +299,7 @@ function adminBody_(a) {
     members: rows.map(function (h) {
       return { slack_id: h.slack_id, name: h.name, email: h.email, teams: h.teams, roles: h.roles, status: h.status, notion_user: h.notion_user || '', key: h.key || '' };
     }),
-    teams: a.teams || [], roles: a.roles || [],
+    teams: a.teams || [], roles: a.roles || [], managers_on_teams: !!a.managers_on_teams,
   };
   var table = function (head, body, empty) {
     return body ? '<div class="scroll"><table><thead><tr>' + head.map(function (h) { return '<th>' + h + '</th>'; }).join('') + '</tr></thead><tbody>' + body + '</tbody></table></div>'
@@ -310,8 +313,10 @@ function adminBody_(a) {
     '<div class="bar"><span class="lead">動いているかどうかの点検と、台帳の操作です。案件の中身は出ません。鍵は Bot が本人に DM で送り、この画面には出しません。</span>' +
     '<button type="button" data-add-member>メンバーを足す</button></div>' +
     table(['名前', 'チーム', 'ロール', '動き', '版', '要約が届いた日', ''], members, 'まだ誰もいません') + '</div>' +
-    '<div data-subpanel="a-teams" hidden><div class="bar"><span class="lead">親チームの管理者には、その下のチームの人も見えます。</span><button type="button" data-add-team>チームを足す</button></div>' +
-    table(['チームID', '表示名', '親チーム', '人数', ''], teams, 'チームがありません') + '</div>' +
+    '<div data-subpanel="a-teams" hidden><div class="bar"><span class="lead">' +
+    (a.managers_on_teams ? 'チームの管理者には、そのチームと、その下のチームの人が見えます。'
+      : '管理者をここで選ぶには、先に台帳のメニュー「シートを整える」を1回押してください（いまの管理者のロールを、チームに移します）。') + '</span><button type="button" data-add-team>チームを足す</button></div>' +
+    table(['チームID', '表示名', '親チーム', '管理者', '人数', ''], teams, 'チームがありません') + '</div>' +
     '<div data-subpanel="a-aliases" hidden><div class="bar"><span class="lead">同じ案件が人によって別の名前で届いたものを、1つに束ねます。名前は画面に出ているとおりに書きます。</span>' +
     '<button type="button" data-merge>案件をまとめる</button></div>' +
     table(['束ねる名前', 'まとめ先', ''], aliases, 'まだ束ねた案件はありません') + '</div>' +
@@ -472,7 +477,8 @@ var ADMIN_JS = `
     f.list = [
       field('名前', f.name),
       field('チーム', f.teams, lost.length ? '「チーム」シートに無い ' + lost.join('、') + ' は外れます' : ''),
-      field('ロール', f.roles, 'どれも付けなければ、自分の分だけが見えるメンバーです。管理者・役員を付けると、ページの案内が DM で届きます'),
+      field('ロール', f.roles, d.managers_on_teams ? 'どれも付けなければ、自分の分だけが見えるメンバーです。役員を付けると、ページの案内が DM で届きます。チームの管理者は「チーム」で選びます'
+        : 'どれも付けなければ、自分の分だけが見えるメンバーです。管理者・役員を付けると、ページの案内が DM で届きます'),
       field('メール', f.email, '社内の Google アカウント。ページはこのメールで本人を見分けます'),
       field('Notion ユーザー', f.notion, 'MTD の案件と結びつけるのに使います。空なら MTD は出ません'),
     ];
@@ -510,21 +516,37 @@ var ADMIN_JS = `
     data().teams.forEach(function (t) { if (t.id !== except) opts.push({ value: t.id, label: teamLabel(t) }); });
     return choose(opts, value);
   }
+  // 管理者に選べるのは、台帳にいて停止していない人（いまの管理者は停止していても外せるように出す）
+  function managers(selected) {
+    var opts = data().members.filter(function (m) { return m.status !== '停止' || selected.indexOf(m.slack_id) >= 0; })
+      .map(function (m) { return { value: m.slack_id, label: m.name }; });
+    return checks(opts, selected);
+  }
+  var MANAGER_NOTE = 'このチームと、その下のチームの人が見えます。新しく選んだ人には、ページの案内が DM で届きます';
   function editTeam(id) {
-    var t = data().teams.filter(function (x) { return x.id === id; })[0];
+    var d = data();
+    var t = d.teams.filter(function (x) { return x.id === id; })[0];
     if (!t) return;
     var name = text(t.name);
     var parent = parents(t.id, t.parent);
-    show('チーム ' + t.id, [field('表示名', name), field('親チーム', parent, '親チームの管理者には、このチームの人も見えます')], function () {
-      return { kind: 'team', id: t.id, set: { name: name.value, parent: parent.value }, base: { name: t.name, parent: t.parent } };
+    var mgr = d.managers_on_teams ? managers(t.managers || []) : null;
+    var list = [field('表示名', name), field('親チーム', parent, '親チームの管理者には、このチームの人も見えます')];
+    if (mgr) list.push(field('管理者', mgr, MANAGER_NOTE));
+    show('チーム ' + t.id, list, function () {
+      var set = { name: name.value, parent: parent.value }, base = { name: t.name, parent: t.parent };
+      if (mgr) { set.managers = picked(mgr); base.managers = t.managers || []; }
+      return { kind: 'team', id: t.id, set: set, base: base };
     });
   }
   function addTeam() {
     var id = text('', 'pm3');
     var name = text('', 'PM3');
     var parent = parents('', '');
-    show('チームを足す', [field('チームID', id, '英数字・- ・_ 。あとから変えられません'), field('表示名', name), field('親チーム', parent)], function () {
-      return { kind: 'add_team', id: id.value, name: name.value, parent: parent.value };
+    var mgr = data().managers_on_teams ? managers([]) : null;
+    var list = [field('チームID', id, '英数字・- ・_ 。あとから変えられません'), field('表示名', name), field('親チーム', parent)];
+    if (mgr) list.push(field('管理者', mgr, MANAGER_NOTE));
+    show('チームを足す', list, function () {
+      return { kind: 'add_team', id: id.value, name: name.value, parent: parent.value, managers: mgr ? picked(mgr) : [] };
     });
   }
   function merge() {
