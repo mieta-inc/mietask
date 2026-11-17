@@ -61,6 +61,7 @@ class Sheet {
 class Spreadsheet {
   constructor() { this.sheets = {}; this.active = null; this.activeRow = 2; }
   getSheetByName(n) { return this.sheets[n] || null; }
+  getUrl() { return 'https://docs.google.com/spreadsheets/d/LEDGER/edit'; }
   insertSheet(n) { return (this.sheets[n] = new Sheet(n)); }
 }
 
@@ -749,6 +750,7 @@ test('ダッシュボード：システム管理者は管理のタブで全員�
   const v = dash(env, 'sys@example.com');
   assert.deepStrictEqual([v.teams, v.people, v.self.slack_id, v.tabs], [[], [], 'UA', ['self', 'admin']], 'システム管理者に他人の案件が見えている');
   assert.ok(v.admin.health.some(x => x.name === '別チーム') && !JSON.stringify(v.admin).includes('社内DX'));
+  assert.strictEqual(v.admin.ledger_url, 'https://docs.google.com/spreadsheets/d/LEDGER/edit', '管理台帳の URL が返っていない');
   assert.ok(!JSON.stringify(v.projects).includes('社内DX'), 'システム管理者に他人の案件が見えている');
   const h = call(env, { action: 'dashboard', secret: 'dash-secret', email: 'sys@example.com', view: 'health' });
   assert.ok(h.ok && !h.forbidden, JSON.stringify(h));
@@ -1032,6 +1034,9 @@ test('ダッシュボードのページ：見る人でタブが変わる。メ�
   assert.deepStrictEqual(tabsOf(top), ['自分', '管理']);
   assert.ok(top.includes('メンバーを足す') && top.includes('メンバー, システム管理者') && top.includes('鍵を送る'), top);
   assert.ok(!top.includes('26順天高1ゼミ'), '管理のタブに案件の中身が出ている');
+  // 管理台帳へはシステム管理者だけが飛べる
+  assert.ok(top.includes('<a class="ledger" href="https://docs.google.com/spreadsheets/d/LEDGER/edit" target="_blank" rel="noopener">'), '管理台帳へのリンクが無い');
+  assert.ok(![h, ex].some(x => x.includes('spreadsheets/d/LEDGER') || x.includes('管理台帳を開く')), 'システム管理者でない人に管理台帳のリンクが出ている');
   // 以前の動作状況の URL（?view=health）は、管理のタブを開いた状態で出す
   assert.match(sys.page({ view: 'health' }), /aria-selected="true">管理</);
   // システム管理者でなければ、URL を直に開いても管理のタブは出ない
