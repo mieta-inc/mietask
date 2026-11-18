@@ -98,7 +98,7 @@ func TestProjectUpdateRejectsMalformed(t *testing.T) {
 	}
 }
 
-// --projects：持ち案件の一覧を「管理者に届く内容」に出し、同じものを窓口に送る（題名・件数は送らない）
+// --projects：持ち案件の一覧を窓口に送る（題名・件数は送らない）。投稿には「管理者に届く内容」を足さない（ページの「自分」で見られる）
 func TestPostWithProjects(t *testing.T) {
 	h := setupHome(t)
 	f := newFakeRelay(t)
@@ -116,9 +116,8 @@ func TestPostWithProjects(t *testing.T) {
 	out, err := captureStdout(t, func() error { return runPost(a) })
 	must(t, err)
 	rs := f.posts[0]["replies"].([]any)
-	want := "• 渋谷区WS（PM） — 相手待ち：当日の進行案を先方に確認中\n• 社内DX — しばらく動きなし（最後に動いた 11/1）"
-	if len(rs) != 2 || !strings.HasSuffix(rs[1].(string), want) {
-		t.Fatalf("管理者に届く内容: %q\n%s", rs, out)
+	if len(rs) != 1 || rs[0] != "子1" {
+		t.Fatalf("投稿に管理者に届く内容を足している: %q\n%s", rs, out)
 	}
 	sent, _ := json.Marshal(f.shares[0]["items"])
 	var got []map[string]any

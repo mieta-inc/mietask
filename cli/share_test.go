@@ -60,7 +60,7 @@ func TestLoadShareRejectsLeakyOrMalformed(t *testing.T) {
 	}
 }
 
-// --share：投稿の子スレッドの最後に「管理者に届く内容」が出て、同じ中身（案件名・状態・期限だけ）が窓口に届く
+// --share：要約（案件名・状態・期限だけ）が窓口に届く。投稿には「管理者に届く内容」を足さない
 func TestPostWithShare(t *testing.T) {
 	h := setupHome(t)
 	f := newFakeRelay(t)
@@ -78,10 +78,8 @@ func TestPostWithShare(t *testing.T) {
 		t.Fatalf("投稿されていない: %s", out)
 	}
 	rs := f.posts[0]["replies"].([]any)
-	want := ":eyes: *管理者に届く内容*（管理者のページに、持っている案件と、それぞれのいまの状態の一言が出ます。タスクの題名・メールやDMの中身は届きません）\n" +
-		"• ミエマス（ポータル・MTD） — 動いている・残り4件（うち超過1件）（次の期限 11/20）：管理画面の作り直し\n• 社内DX — 相手待ち・残り0件"
-	if len(rs) != 2 || rs[0] != "子1" || rs[1] != want {
-		t.Errorf("子スレッドの最後に管理者に届く内容が出ていない: %q", rs)
+	if len(rs) != 1 || rs[0] != "子1" {
+		t.Errorf("投稿に管理者に届く内容を足している: %q", rs)
 	}
 	if len(f.shares) != 1 {
 		t.Fatalf("要約が窓口に届いていない: %s", out)
@@ -184,5 +182,19 @@ func TestShareHints(t *testing.T) {
 	useRelayKey(t, f, "wrong")
 	if _, err := captureStdout(t, cmdShareHints); err == nil {
 		t.Error("鍵が無効なのに止まらなかった")
+	}
+}
+
+// 返事を返すタスクがあるのに返信案の子スレッドが無ければ気づけるようにする
+func TestMissingReplyDrafts(t *testing.T) {
+	need := []string{":red_circle: *今日中 (1)*\n*1. 健康診断の日程に返事する*\n→ 次の一手: どちらで受けるかをスレッドで返す"}
+	if !missingReplyDrafts(need) {
+		t.Error("返信案が無いのに気づかない")
+	}
+	if missingReplyDrafts(append(need, ":speech_balloon: *返信案*（送っていません。コピペ用）")) {
+		t.Error("返信案があるのに警告する")
+	}
+	if missingReplyDrafts([]string{"*2. デモ画面を作る*\n→ 次の一手: 新フォームに合わせて作る"}) {
+		t.Error("返事の要らないタスクで警告する")
 	}
 }

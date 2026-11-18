@@ -241,15 +241,15 @@ func run(argv []string) int {
 
 // runPost は自分のチャンネルへの投稿と、そのあとに窓口へ送るもの（点検用の件数・管理者向けの要約）。
 //
-// --share を付けると、要約の形を投稿の前に確かめ、子スレッドの最後に「管理者に届く内容」として同じものを出し、
-// 投稿のあとで窓口に送る。投稿は済んでいるので、要約を送れなくても投稿をやり直させない（警告だけ）。
+// --share・--projects を付けると、要約の形を投稿の前に確かめ、投稿のあとで窓口に送る。
+// 管理者に何が届いているかは本人がページの「自分」で見られるので、投稿には足さない（2026-11-18）。
+// 投稿は済んでいるので、要約を送れなくても投稿をやり直させない（警告だけ）。
 func runPost(a *args) error {
 	dry := a.flags["dry-run"]
 	payload := a.get("payload")
 	sharePath := a.get("share")
 	withProjects := a.flags["projects"]
 	var share []shareItem
-	postPath := payload
 	if withProjects && sharePath != "" {
 		return errors.New("--projects と --share は一緒には使えません。")
 	}
@@ -268,12 +268,8 @@ func runPost(a *args) error {
 		} else if share, err = loadShare(sharePath); err != nil {
 			return err
 		}
-		if postPath, err = withSharePreview(payload, share); err != nil {
-			return err
-		}
-		defer os.Remove(postPath)
 	}
-	if err := cmdPost(postPath, a.get("channel"), a.get("token-file"), dry); err != nil {
+	if err := cmdPost(payload, a.get("channel"), a.get("token-file"), dry); err != nil {
 		return err
 	}
 	// 動作の点検用に件数（超過・今日・今週）だけを窓口に送る（システム管理者が見る）。payload を消す前に読む。
