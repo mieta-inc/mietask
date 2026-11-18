@@ -207,3 +207,57 @@ func TestProjectStageAndMilestone(t *testing.T) {
 		}
 	}
 }
+
+// 本人が外した案件は、巡回で拾われても90日は黙って戻らない。「また持った」と言われたときだけ戻す
+func TestRemovedProjectStaysOut(t *testing.T) {
+	setupHome(t)
+	fakeToday(t, "2026-11-01")
+	_, err := runUpdate(t, `{"touched":[{"name":"渋谷区WS","state":"動いている"},{"name":"社内DX","state":"動いている"}]}`)
+	must(t, err)
+	_, err = captureStdout(t, func() error { return runProjects([]string{"remove", "渋谷区WS"}) })
+	must(t, err)
+
+	// 翌日、巡回で関係するものを拾っても足さない（空白のゆれも同じ案件）
+	fakeToday(t, "2026-11-02")
+	out, err := runUpdate(t, `{"touched":[{"name":"渋谷区 WS","state":"動いている"},{"name":"社内DX","state":"動いている"}]}`)
+	must(t, err)
+	if !strings.Contains(out, "外した案件なので足しませんでした: 渋谷区 WS（11/1") || !strings.Contains(out, "持っている案件 1件") {
+		t.Fatalf("外した案件が戻ってきた:\n%s", out)
+	}
+	if !strings.Contains(out, "本人が外した案件（90日は足しません）: 渋谷区WS") {
+		t.Fatalf("外した案件が一覧の下に出ていない:\n%s", out)
+	}
+
+	// 「また持った」と言われたら restore と一緒に足す
+	out, err = runUpdate(t, `{"restore":["渋谷区WS"],"touched":[{"name":"渋谷区WS","state":"動いている"}]}`)
+	must(t, err)
+	if !strings.Contains(out, "外した案件から戻しました: 渋谷区WS") || !strings.Contains(out, "足しました: 渋谷区WS") {
+		t.Fatalf("戻せていない:\n%s", out)
+	}
+	b, _ := loadBook()
+	if len(b.Removed) != 0 || len(b.Projects) != 2 {
+		t.Fatalf("戻したあとの台帳: %+v", b)
+	}
+
+	// 6週間動きが無くて外れたものは覚えない（また動けばそのまま戻る）
+	fakeToday(t, "2026-12-20")
+	out, err = runUpdate(t, `{"touched":[{"name":"社内DX","state":"動いている"}]}`)
+	must(t, err)
+	if !strings.Contains(out, "足しました: 社内DX") {
+		t.Fatalf("自然に外れた案件が戻らない:\n%s", out)
+	}
+
+	// 外してから90日たてば忘れる
+	_, err = captureStdout(t, func() error { return runProjects([]string{"remove", "社内DX"}) })
+	must(t, err)
+	fakeToday(t, "2027-03-21")
+	out, err = runUpdate(t, `{"touched":[{"name":"社内DX","state":"動いている"}]}`)
+	must(t, err)
+	if !strings.Contains(out, "足しました: 社内DX") {
+		t.Fatalf("90日たっても忘れていない:\n%s", out)
+	}
+	b, _ = loadBook()
+	if len(b.Removed) != 0 {
+		t.Fatalf("忘れていない: %+v", b.Removed)
+	}
+}

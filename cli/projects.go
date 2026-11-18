@@ -7,6 +7,7 @@ package main
 // （一言と最後に動いた日）。動きの無い日が続いた案件は、ここで決まりどおりに扱う。
 //   - 最後に動いてから 3週間（idleDays）: 「しばらく動きなし」にする
 //   - 最後に動いてから 6週間（dropDays）: 一覧から外す
+// 本人が「終わった」「持っていない」と言って外した案件は 90日（forgetDays）覚えておき、巡回で拾われても黙って足さない。
 // 管理者に送るのはこの一覧そのもの（案件名・関わり方・状態・一言・最後に動いた日）。タスクの題名や件数は送らない。
 
 import (
@@ -27,6 +28,7 @@ const (
 	projectNameMax = 30
 	projectRoleMax = 12
 	projectDetail  = 300 // 詳細の上限（ページでは開いたときに数行）
+	forgetDays     = 90  // 本人が外した案件を覚えておく日数
 )
 
 // 本人の Claude が付けられる状態（「しばらく動きなし」は日付から決まるので付けられない）
@@ -51,13 +53,20 @@ type project struct {
 }
 
 type projectBook struct {
-	Projects []project `json:"projects"`
+	Projects []project        `json:"projects"`
+	Removed  []removedProject `json:"removed,omitempty"` // 本人が外した案件（forgetDays のあいだ足さない）
+}
+
+type removedProject struct {
+	Name string `json:"name"`
+	On   string `json:"on"` // 外した日
 }
 
 // その日の更新（本人の Claude が書く）
 type projectUpdate struct {
 	Touched []project `json:"touched"`
 	Remove  []string  `json:"remove"`
+	Restore []string  `json:"restore"` // 本人が「また持った」と言った、外した案件
 	Rename  []struct {
 		From string `json:"from"`
 		To   string `json:"to"`
@@ -162,6 +171,29 @@ func (b *projectBook) find(name string) int {
 	return -1
 }
 
+// removedAt は外した案件の位置（無ければ -1）
+func (b *projectBook) removedAt(name string) int {
+	k := projectKey(name)
+	for i, r := range b.Removed {
+		if projectKey(r.Name) == k {
+			return i
+		}
+	}
+	return -1
+}
+
+// forgetRemoved は外してから forgetDays を過ぎたものを忘れる
+func forgetRemoved(b *projectBook) {
+	cut := ymd(todayJST().AddDate(0, 0, -forgetDays))
+	var keep []removedProject
+	for _, r := range b.Removed {
+		if r.On >= cut {
+			keep = append(keep, r)
+		}
+	}
+	b.Removed = keep
+}
+
 // applyUpdate はその日の更新を台帳に入れる。形が違えば何も変えずに止まる
 func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 	today := ymd(todayJST())
@@ -201,6 +233,16 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 		}
 	}
 	var notes []string
+	forgetRemoved(b)
+	for _, name := range u.Restore {
+		i := b.removedAt(name)
+		if i < 0 {
+			notes = append(notes, "外した案件の中に見つかりません（そのまま足せます）: "+name)
+			continue
+		}
+		b.Removed = append(b.Removed[:i], b.Removed[i+1:]...)
+		notes = append(notes, "外した案件から戻しました: "+name)
+	}
 	for _, r := range u.Rename {
 		i := b.find(r.From)
 		if i < 0 {
@@ -228,7 +270,13 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 			notes = append(notes, "外す案件が見つかりません: "+name)
 			continue
 		}
+		gone := b.Projects[i].Name
 		b.Projects = append(b.Projects[:i], b.Projects[i+1:]...)
+		if j := b.removedAt(gone); j >= 0 {
+			b.Removed[j].On = today
+		} else {
+			b.Removed = append(b.Removed, removedProject{Name: gone, On: today})
+		}
 		notes = append(notes, "外しました: "+name)
 	}
 	for _, t := range u.Touched {
@@ -252,6 +300,11 @@ func applyUpdate(b *projectBook, u projectUpdate) ([]string, error) {
 			if strings.TrimSpace(t.Next) != "" {
 				p.Next, p.NextDate = strings.TrimSpace(t.Next), t.NextDate
 			}
+			continue
+		}
+		if j := b.removedAt(t.Name); j >= 0 {
+			// 本人が外した案件。巡回で関係するものを拾っても、黙って戻さない
+			notes = append(notes, fmt.Sprintf("外した案件なので足しませんでした: %s（%s に外したもの。本人が「また持った」と言ったときだけ restore に入れて足す）", t.Name, shortDate(b.Removed[j].On)))
 			continue
 		}
 		b.Projects = append(b.Projects, project{Name: t.Name, Role: t.Role, Note: t.Note, Detail: t.Detail, Stage: t.Stage,
@@ -310,7 +363,13 @@ func printBook(b *projectBook) {
 		if p.Detail != "" {
 			fmt.Println("    " + p.Detail)
 		}
-
+	}
+	if len(b.Removed) > 0 {
+		names := make([]string, 0, len(b.Removed))
+		for _, r := range b.Removed {
+			names = append(names, r.Name)
+		}
+		fmt.Printf("本人が外した案件（%d日は足しません）: %s\n", forgetDays, strings.Join(names, "、"))
 	}
 }
 

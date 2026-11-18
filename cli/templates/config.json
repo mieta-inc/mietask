@@ -58,6 +58,9 @@
     }
   },
 
+  "_requests_note": "本人が毎朝の投稿のスレッドに書いた要望（「出欠確認は出さなくていい」など）。毎朝の巡回はこれに従う。text と since（書いた日）",
+  "requests": [],
+
   "slack": {
     "_comment": "主要なやり取りがSlackなら、ここが一番効く経路になる",
     "watch_mentions": true,

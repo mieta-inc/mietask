@@ -213,17 +213,37 @@ func refKey(v any) string {
 	return DumpJSON(v, 0)
 }
 
+// byRef は ref ごとに一番新しいタスクを引く（完了のあとに起こし直した続きがあれば、そちらが当たる）
 func byRef(tasks []*Obj) map[string]*Obj {
 	out := map[string]*Obj{}
 	for _, t := range tasks {
 		ref := refKey(orObj(t.Val("source")).Val("ref"))
 		if ref != "" {
-			if _, ok := out[ref]; !ok {
-				out[ref] = t
-			}
+			out[ref] = t
 		}
 	}
 	return out
+}
+
+// movedAfterDone は、完了したタスクのスレッド・メールに、完了のあとで本人以外の動きがあったか。
+// 巡回が source.activity_at（最後に本人以外が発言・送信した時刻）を渡したときだけ見る。無ければ動きなしとみなす
+func movedAfterDone(hit *Obj, src *Obj) (bool, string) {
+	if status(hit) != "done" {
+		return false, ""
+	}
+	raw := str(src.Val("activity_at"))
+	if raw == "" {
+		return false, ""
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return false, fmt.Sprintf("source.activity_at の形が違うので読み飛ばしました（%s）。2026-11-18T10:30:00+09:00 の形で書きます", raw)
+	}
+	done, err := time.Parse(time.RFC3339, str(hit.Val("completed_at")))
+	if err != nil {
+		return false, ""
+	}
+	return at.After(done), ""
 }
 
 func getThread(state *Obj) *Obj { return state.SetDefaultObj("slack_thread") }
@@ -298,7 +318,7 @@ func cmdUpsert(findingsPath string, carryOver, dryRun bool) error {
 	nid := nextTaskID(tasks)
 	stamp := nowStamp()
 	mapping := NewObj()
-	var created, updated, skipped []string
+	var created, updated, skipped, reopened, warns []string
 	number := 0
 
 	for _, fvItem := range findings {
@@ -316,9 +336,17 @@ func cmdUpsert(findingsPath string, carryOver, dryRun bool) error {
 			continue
 		}
 		hit := index[ref]
+		var follows *Obj // 完了のあとに動きがあって起こし直すときの、前のタスク
 		if hit != nil && isClosed(hit) {
-			skipped = append(skipped, fmt.Sprintf("%s ← %s は %s 済み", pyStr(f.Val("title")), taskID(hit), pyStr(hit.Val("status"))))
-			continue
+			moved, warn := movedAfterDone(hit, src)
+			if warn != "" {
+				warns = append(warns, warn)
+			}
+			if !moved {
+				skipped = append(skipped, fmt.Sprintf("%s ← %s は %s 済み", pyStr(f.Val("title")), taskID(hit), pyStr(hit.Val("status"))))
+				continue
+			}
+			follows, hit = hit, nil
 		}
 
 		number++
@@ -350,7 +378,13 @@ func cmdUpsert(findingsPath string, carryOver, dryRun bool) error {
 			t.Set("status", st)
 			t.Set("priority", getDefault(f, "priority", "P3"))
 			t.Set("source", src)
-			t.Set("notes", getDefault(f, "notes", ""))
+			notes := pyStr(getDefault(f, "notes", ""))
+			if follows != nil {
+				t.Set("follows", taskID(follows))
+				notes = strings.TrimSpace(taskID(follows) + " の続き（完了のあとに動きがあった） " + notes)
+				reopened = append(reopened, fmt.Sprintf("%s ← %s の続き", tid, taskID(follows)))
+			}
+			t.Set("notes", notes)
 			t.Set("next_action", getDefault(f, "next_action", ""))
 			t.Set("project", f.Val("project"))
 			t.Set("detected_at", stamp)
@@ -441,6 +475,12 @@ func cmdUpsert(findingsPath string, carryOver, dryRun bool) error {
 	fmt.Printf("%s新規 %d件 / 既存更新 %d件 / 繰り越し %d件 / 除外 %d件\n", tag, len(created), len(updated), len(carried), len(skipped))
 	if len(created) > 0 {
 		fmt.Println("  新規:", strings.Join(created, ", "))
+	}
+	for _, s := range reopened {
+		fmt.Println("  完了のあとに動きがあったので起こし直し:", s)
+	}
+	for _, w := range warns {
+		fmt.Println("  ⚠", w)
 	}
 	for _, s := range skipped {
 		fmt.Println("  除外:", s)
@@ -555,6 +595,19 @@ func cmdComplete(repliesPath string, allowNoMapping bool, onlyUser string, dryRu
 
 	texts, adds := splitAdds(texts)
 	ids, stayIDs, memos, unresolved := parseReplies(texts, mapping)
+	others := otherLines(texts)
+	// そのほかの書き込みは、sync done --quote で引けるようにスレッドに控える（翌朝の投稿で入れ替わる）
+	if len(others) > 0 {
+		arr := make([]any, len(others))
+		for i, o := range others {
+			arr[i] = o
+		}
+		getThread(state).Set("other_lines", arr)
+		if err := saveLedger(statePath(), state, dryRun); err != nil {
+			return err
+		}
+	}
+	defer printOthers(others)
 	if len(ids)+len(stayIDs)+len(memos)+len(unresolved)+len(adds) == 0 {
 		fmt.Println("完了・ステイ・メモ・追加の返信はありませんでした。")
 		return nil
@@ -756,6 +809,65 @@ func cmdComplete(repliesPath string, allowNoMapping bool, onlyUser string, dryRu
 	return nil
 }
 
+func printOthers(others []string) {
+	if len(others) == 0 {
+		return
+	}
+	fmt.Printf("そのほかの書き込み %d件（完了の報告・要望・調整。Claude が読んで扱う）\n", len(others))
+	for _, o := range others {
+		fmt.Println("  ✎", o)
+	}
+}
+
+// cmdDoneByQuote は、本人の「そのほかの書き込み」に書かれた完了の報告から done にする。
+// 完了は本人の返信からだけ記録する作りなので、引用が前回のスレッドの書き込みに無ければ止まる
+func cmdDoneByQuote(tid, quote string, dryRun bool) error {
+	quote = pyStrip(quote)
+	state, err := loadLedger(statePath())
+	if err != nil {
+		return err
+	}
+	found := false
+	if arr, ok := getThread(state).Val("other_lines").([]any); ok {
+		for _, v := range arr {
+			if pyStr(v) == quote {
+				found = true
+			}
+		}
+	}
+	if quote == "" || !found {
+		return &SyncError{"--quote の文が、前回のスレッドの本人の書き込みにありません。sync complete の「そのほかの書き込み」の行をそのまま渡してください。"}
+	}
+	data, err := loadLedger(tasksPath())
+	if err != nil {
+		return err
+	}
+	tasks, err := tasksList(data)
+	if err != nil {
+		return err
+	}
+	for _, t := range tasks {
+		if taskID(t) != tid {
+			continue
+		}
+		if isClosed(t) {
+			fmt.Printf("変更なし: %s（すでに %s）\n", tid, pyStr(t.Val("status")))
+			return nil
+		}
+		stamp := nowStamp()
+		t.Set("status", "done")
+		t.Set("completed_at", stamp)
+		t.Set("done_by", quote)
+		data.Set("updated_at", stamp)
+		if err := saveLedger(tasksPath(), data, dryRun); err != nil {
+			return err
+		}
+		fmt.Printf("done: %s %s ← 本人の書き込み「%s」\n", tid, pyStr(getDefault(t, "title", "")), quote)
+		return nil
+	}
+	return &SyncError{tid + " は tasks.json にありません"}
+}
+
 // ---------------------------------------------------------------- status
 
 // cmdStatus は変更できなかったものがあれば changedAll=false を返す（終了コード1にする）。
@@ -851,6 +963,7 @@ func cmdRecord(ts, channel string, dryRun bool) error {
 	thread.Set("ts", ts)
 	thread.Set("channel", channel)
 	thread.Set("posted_at", nowStamp())
+	thread.Delete("other_lines") // 前のスレッドの書き込みは、新しい投稿で使えなくする
 	if err := saveLedger(statePath(), state, dryRun); err != nil {
 		return err
 	}

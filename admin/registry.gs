@@ -1396,6 +1396,15 @@ function mtdNames_(st) {
   return uniq_(names);
 }
 
+// MTD にだけある案件の一言（ミエタスクの一言が無いときに使う）。MTD のタスクの動きから作る
+// 例：「進行中のタスク2件」「進行中のタスクなし・あと4日で終わり」。MTD のタスクを読めていなければ期間のことだけ
+function mtdNote_(st, p) {
+  var n = (st.moving[p.id] || []).length;
+  var left = p.end ? daysBetween_(st.today, p.end) : -1;
+  return [n ? '進行中のタスク' + n + '件' : st.hasTasks ? '進行中のタスクなし' : '',
+    left === 0 ? '今日で終わり' : left > 0 && left <= 14 ? 'あと' + left + '日で終わり' : ''].filter(String).join('・');
+}
+
 // 1人ぶんの、案件ごとの関わり。出どころ（MTD・ミエタスク）ごとに1つずつ。
 // 人ごとに束ねるのは personItems_、案件ごとに束ねるのは projectsView_
 function memberEntries_(st, sh, today) {
@@ -1404,7 +1413,7 @@ function memberEntries_(st, sh, today) {
     st.running.concat(st.leading).forEach(function (p) {
       var stuck = st.stuckIn[p.id];
       out.push({ name: p.name, src: 'mtd', rank: stuck ? RANK.waiting : RANK.running, due: '', roles: p.roles,
-        start: p.start, end: p.end, people: p.people || [], note: stuck ? stuck + 'のタスクあり' : '' });
+        start: p.start, end: p.end, people: p.people || [], note: stuck ? stuck + 'のタスクあり' : mtdNote_(st, p), plain: !stuck });
     });
     st.starting.forEach(function (p) {
       out.push({ name: p.name, src: 'mtd', rank: RANK.starting, due: '', roles: p.roles, start: p.start, end: p.end,
@@ -1451,7 +1460,9 @@ function personItems_(entries, resolve, today) {
     // 役割は MTD のもの。MTD に無い案件は、本人の持ち案件の一覧に書いた関わり方
     var roles = uniq_([].concat.apply([], (mtd.length ? mtd : sh).map(function (e) { return e.roles; })));
     var last = sh.map(function (e) { return e.last_seen; }).filter(String).sort().reverse()[0] || '';
-    var note = sh.map(function (e) { return e.note; }).filter(String)[0] || mtd.map(function (e) { return e.note; }).filter(String)[0] || '';
+    // MTD のタスクの数だけの一言（plain）は、ミエタスクに無い案件にだけ使う（ミエタスクにあれば、その状態の言葉のほうが確か）
+    var note = sh.map(function (e) { return e.note; }).filter(String)[0] ||
+      mtd.filter(function (e) { return !(e.plain && sh.length); }).map(function (e) { return e.note; }).filter(String)[0] || '';
     if (!note && sh.length) note = SHARE_WORD[Math.min.apply(null, sh.map(function (e) { return e.rank; }))] || '';
     var detail = sh.map(function (e) { return e.detail; }).filter(String)[0] || '';
     var stage = sh.map(function (e) { return e.stage; }).filter(String)[0] || '';
