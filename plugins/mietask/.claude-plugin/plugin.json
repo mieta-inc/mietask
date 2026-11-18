@@ -1,7 +1,7 @@
 {
   "name": "mietask",
   "description": "毎朝、自分が動くべきものを自分専用の Slack チャンネルに届ける。入れたら「Code」タブで /mietask:setup と打つ",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "author": {
     "name": "ミエタ"
   }

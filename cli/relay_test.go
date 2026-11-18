@@ -32,6 +32,7 @@ type fakeRelay struct {
 	noShare  bool             // 要約の受け取りを知らない古い窓口のふり
 	noHints  bool             // 手がかりを知らない古い窓口のふり
 	hints    []map[string]any // 手がかりを頼まれたときに送られた中身
+	noPins   bool             // Slack アプリに pins:write が無いふり
 }
 
 func newFakeRelay(t *testing.T) *fakeRelay {
@@ -91,7 +92,15 @@ func (f *fakeRelay) respond(b map[string]any) map[string]any {
 			return map[string]any{"ok": false, "error": "forbidden_channel", "message": "この投稿先には投稿できません"}
 		}
 		f.posts = append(f.posts, b)
-		return map[string]any{"ok": true, "ts": fmt.Sprintf("1700000000.%06d", len(f.posts))}
+		out := map[string]any{"ok": true, "ts": fmt.Sprintf("1700000000.%06d", len(f.posts))}
+		if b["pin"] == true {
+			if f.noPins {
+				out["pin_error"] = "missing_scope"
+			} else {
+				out["pinned"] = true
+			}
+		}
+		return out
 	case "status":
 		if f.noStatus {
 			break
@@ -245,5 +254,31 @@ func TestRelayRegistryAndDoctor(t *testing.T) {
 	})
 	if !strings.Contains(out, "一人ずつの鍵") || !strings.Contains(out, "#ミエタスク-yamada") || strings.Contains(out, "❌") {
 		t.Errorf("doctor:\n%s", out)
+	}
+}
+
+// "pin": true の投稿は親をピン留めしてもらう。できなくても投稿は済ませ、警告だけ出す
+func TestPostPin(t *testing.T) {
+	h := setupHome(t)
+	f := newFakeRelay(t)
+	useRelayKey(t, f, "s3cret")
+	write(t, slackPostPath(), `{"channel": "COWN"}`)
+	payload := filepath.Join(h, "hello.json")
+	write(t, payload, `{"pin": true, "parent": "ようこそ", "replies": []}`)
+	out, err := captureStdout(t, func() error { return cmdPost(payload, "", "", false) })
+	must(t, err)
+	if f.posts[0]["pin"] != true || !strings.Contains(out, "ピン留め: しました") {
+		t.Fatalf("ピン留めを頼んでいない: %v\n%s", f.posts[0], out)
+	}
+	f.noPins = true
+	write(t, payload, `{"pin": true, "parent": "ようこそ", "replies": []}`)
+	out, err = captureStdout(t, func() error { return cmdPost(payload, "", "", false) })
+	if err != nil || strings.Contains(out, "ピン留め: しました") {
+		t.Fatalf("権限が無いのに止まったか、しましたと出た: %v\n%s", err, out)
+	}
+	write(t, payload, `{"parent": "ふつう", "replies": []}`)
+	_, _ = captureStdout(t, func() error { return cmdPost(payload, "", "", false) })
+	if _, ok := f.posts[2]["pin"]; ok {
+		t.Error("pin を付けていない投稿でピン留めを頼んだ")
 	}
 }
