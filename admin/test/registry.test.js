@@ -152,6 +152,13 @@ class FakeSlack {
         c.messages = c.messages.filter(m => m.ts !== p.ts);
         return before === c.messages.length ? { ok: false, error: 'message_not_found' } : { ok: true };
       }
+      case 'pins.add': {
+        if (this.noPins) return { ok: false, error: 'missing_scope' };
+        const c = this.channels[p.channel];
+        if (!c) return { ok: false, error: 'channel_not_found' };
+        c.pins = (c.pins || []).concat(p.timestamp);
+        return { ok: true };
+      }
     }
     return { ok: false, error: 'unknown_method' };
   }
@@ -1672,4 +1679,22 @@ test('チームを選ぶ：台帳の「チーム」から選択肢を返し、�
   const j2 = call(env, { action: 'join_team', id: k2.i, k: k2.k, team: 'pm2' });
   assert.deepStrictEqual(j2.notified, ['システム 管理']);
   assert.match(env.slack.dms.UA.slice(-1)[0].text, /「PM2」に入りました[\s\S]*ページの「管理 → メンバー」/);
+});
+
+test('ようこそのピン留め：pin を付けた投稿は親をピン留めする。権限が無くても投稿は済ませ、理由だけ返す', () => {
+  const env = load();
+  seed(env);
+  const k = issue(env, 2);
+  const s = call(env, { id: k.i, k: k.k, action: 'setup', candidates: ['ミエタスク-yamada'] });
+  const p = call(env, { id: k.i, k: k.k, action: 'post', channel: s.channel, parent: 'ようこそ', pin: true });
+  assert.ok(p.ok && p.pinned, JSON.stringify(p));
+  assert.deepStrictEqual(env.slack.channels[s.channel].pins, [p.ts]);
+  // pin を付けなければピン留めしない
+  const q = call(env, { id: k.i, k: k.k, action: 'post', channel: s.channel, parent: 'ふつうの投稿' });
+  assert.ok(q.ok && !('pinned' in q) && env.slack.channels[s.channel].pins.length === 1);
+  // Slack アプリに pins:write が無いとき
+  env.slack.noPins = true;
+  const r = call(env, { id: k.i, k: k.k, action: 'post', channel: s.channel, parent: 'ようこそ', pin: true });
+  assert.ok(r.ok && !r.pinned && r.pin_error === 'missing_scope', JSON.stringify(r));
+  assert.ok(env.slack.channels[s.channel].messages.some(m => m.ts === r.ts), '投稿まで止めている');
 });

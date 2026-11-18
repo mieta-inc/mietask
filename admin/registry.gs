@@ -199,7 +199,14 @@ var ACTIONS = {
       postMessage_(ctx.ss, channel, String(replies[i]), ts);
     }
     if (channel === ctx.member.channel) touch_(ctx, body);
-    return { ts: ts };
+    var out = { ts: ts };
+    // 親をピン留めする（setup の最初の「ようこそ」の案内）。Slack アプリに pins:write が無ければ、投稿は済ませて理由だけ返す
+    if (body.pin === true) {
+      var pr = slack_('pins.add', { channel: channel, timestamp: ts });
+      if (pr.ok || pr.error === 'already_pinned') out.pinned = true;
+      else out.pin_error = pr.error;
+    }
+    return out;
   },
 
   // 本人の投稿先にある Bot の投稿を消す

@@ -381,11 +381,17 @@ func postPayloadFile(payloadPath, channelArg, tokenPath string, dryRun, beat boo
 	}
 	if relay := relayKeyFromFile(); relay != nil {
 		// 一人ずつの鍵：窓口が鍵と停止を確かめ、許された投稿先にだけ投稿する
-		rootTS, err := relayPost(relay, channel, parent, replies)
+		pin := data.Val("pin") == true
+		rootTS, pinErr, err := relayPostPin(relay, channel, parent, replies, pin)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%s: %s\n", tsLabel, rootTS)
+		if pin && pinErr == "" {
+			fmt.Println("ピン留め: しました")
+		} else if pin {
+			fmt.Fprintf(os.Stderr, "警告: ピン留めできませんでした（%s）。投稿は済んでいます。Slack アプリに pins:write の権限が要ります\n", pinErr)
+		}
 		if link := permalink(channel, rootTS); link != "" {
 			fmt.Printf("親メッセージ: %s\n", link)
 		}

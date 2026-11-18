@@ -140,14 +140,15 @@ Claude の設定（カスタマイズ）からマーケットプレイスを追�
 社内で使う場合はアプリが用意済みなので、この節は不要。
 
 1. https://api.slack.com/apps で Create New App → From scratch
-2. OAuth & Permissions → Bot Token Scopes に **`chat:write`**・**`chat:write.customize`**・**`groups:write`**・**`groups:read`** を追加
+2. OAuth & Permissions → Bot Token Scopes に **`chat:write`**・**`chat:write.customize`**・**`groups:write`**・**`groups:read`**・**`pins:write`** を追加
 3. Install to Workspace
 4. **Bot User OAuth Token**（`xoxb-` で始まる）をコピー
 5. 投稿したいチャンネルで `/invite @アプリ名`
 
-この4つだけでよい。`groups:write` はチャンネルの作成と招待、`groups:read` は
+この5つだけでよい。`groups:write` はチャンネルの作成と招待、`groups:read` は
 「本人がそのチャンネルに入っているか」の確認、`chat:write.customize` は
-投稿時の表示名とアイコンの指定に使う。
+投稿時の表示名とアイコンの指定、`pins:write` はセットアップの最初の「ようこそ」の案内のピン留めに使う
+（無くても動く。ピン留めだけが省かれる）。
 
 ## よくある詰まり
 

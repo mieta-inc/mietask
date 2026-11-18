@@ -114,19 +114,34 @@ func relayVersionParams() map[string]any {
 
 // relayPost は親＋子スレッドを窓口経由で投稿し、親の ts を返す。
 func relayPost(k *relayKey, channel, parent string, replies []string) (string, error) {
+	ts, _, err := relayPostPin(k, channel, parent, replies, false)
+	return ts, err
+}
+
+// relayPostPin は relayPost に加えて、pin なら親をピン留めしてもらう。ピン留めできなかった理由（無ければ空）も返す。
+func relayPostPin(k *relayKey, channel, parent string, replies []string, pin bool) (ts, pinErr string, err error) {
 	p := relayVersionParams()
 	p["channel"] = channel
 	p["parent"] = parent
 	p["replies"] = replies
+	if pin {
+		p["pin"] = true
+	}
 	out, err := relayCall(k, "post", p)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	ts, _ := out["ts"].(string)
+	ts, _ = out["ts"].(string)
 	if ts == "" {
-		return "", errors.New("投稿は通ったのに ts が返りませんでした")
+		return "", "", errors.New("投稿は通ったのに ts が返りませんでした")
 	}
-	return ts, nil
+	if pin && out["pinned"] != true {
+		pinErr, _ = out["pin_error"].(string)
+		if pinErr == "" {
+			pinErr = "窓口が古い版です"
+		}
+	}
+	return ts, pinErr, nil
 }
 
 // relayMe は自分の情報・所属チーム・（管理者なら）管理しているチームを返す。
