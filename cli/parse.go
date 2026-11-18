@@ -147,6 +147,22 @@ func parseDone(texts []string, mapping *Obj) (ids, unresolved []string) {
 	return ids, unresolved
 }
 
+// otherLines は、完了・ステイ・メモ・追加のどれにも当たらない本人の書き込み（「〇〇の資料、出しました」
+// 「〇〇からのメールは要らない」など）。実行ファイルでは解釈せず、毎朝の Claude に渡す
+func otherLines(texts []string) []string {
+	var out []string
+	for _, text := range texts {
+		for _, line := range pySplitlines(text) {
+			line = pyStrip(line)
+			if line == "" || len(findAll(reDone, line)) > 0 || len(findAll(reStay, line)) > 0 || matchAtStart(reMemoLine, line) != nil {
+				continue
+			}
+			out = appendUnique(out, line)
+		}
+	}
+	return out
+}
+
 // splitAdds は「追加 …」の行を抜き出す。残りの本文と、追加の中身を返す。
 func splitAdds(texts []string) (rest, adds []string) {
 	for _, text := range texts {

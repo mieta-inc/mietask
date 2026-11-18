@@ -144,3 +144,89 @@ func twoDigits(i int) string {
 	}
 	return s
 }
+
+// 完了したタスクのスレッドに、完了のあとで本人以外の動きがあれば、続きのタスクとして起こし直す。
+// 却下したもの・動きの無いもの・完了より前の動きは起こさない
+func TestReopenAfterDone(t *testing.T) {
+	h := setupHome(t)
+	write(t, filepath.Join(h, "data", "tasks.json"), `{"version": 1, "tasks": [
+	  {"id": "t001", "title": "資料を出す", "status": "done", "completed_at": "2026-11-15T09:00:00+09:00", "source": {"ref": "slack:a"}},
+	  {"id": "t002", "title": "要らないもの", "status": "dropped", "source": {"ref": "slack:b"}},
+	  {"id": "t003", "title": "前に済んだもの", "status": "done", "completed_at": "2026-11-15T09:00:00+09:00", "source": {"ref": "gmail:c"}}
+	]}`)
+	f := filepath.Join(h, "f.json")
+	write(t, f, `[
+	  {"title": "資料の修正", "source": {"ref": "slack:a", "activity_at": "2026-11-15T18:20:00+09:00"}, "section": "today"},
+	  {"title": "要らないもの", "source": {"ref": "slack:b", "activity_at": "2026-11-15T18:20:00+09:00"}},
+	  {"title": "前に済んだもの", "source": {"ref": "gmail:c", "activity_at": "2026-11-14T10:00:00+09:00"}}
+	]`)
+	out, err := captureStdout(t, func() error { return cmdUpsert(f, true, false) })
+	must(t, err)
+	if !strings.Contains(out, "起こし直し: t004 ← t001 の続き") || !strings.Contains(out, "新規 1件") {
+		t.Fatalf("起こし直していない:\n%s", out)
+	}
+	t4 := loadTask(t, "t004")
+	if status(t4) != "today" && status(t4) != "next" || t4.Val("follows") != "t001" || !strings.HasPrefix(str(t4.Val("notes")), "t001 の続き") {
+		t.Fatalf("続きのタスク: %s", DumpJSON(t4, 0))
+	}
+	if status(loadTask(t, "t001")) != "done" {
+		t.Error("前のタスクが開け直された")
+	}
+
+	// 翌日：同じスレッドは続きのタスク（t004）に当たる。二重に起こさない
+	t.Setenv("MIETASK_FAKE_NOW", "2026-11-17T07:00:00+09:00")
+	out, err = captureStdout(t, func() error { return cmdUpsert(f, true, false) })
+	must(t, err)
+	if !strings.Contains(out, "新規 0件") || loadTask(t, "t005") != nil {
+		t.Fatalf("二重に起こし直した:\n%s", out)
+	}
+
+	// 時刻の形が違えば起こさずに知らせる
+	write(t, f, `[{"title": "前に済んだもの", "source": {"ref": "gmail:c", "activity_at": "11/16 10:00"}}]`)
+	out, err = captureStdout(t, func() error { return cmdUpsert(f, true, false) })
+	must(t, err)
+	if !strings.Contains(out, "activity_at の形が違う") || !strings.Contains(out, "新規 0件") {
+		t.Fatalf("形の違う時刻を通した:\n%s", out)
+	}
+}
+
+// 完了・ステイ・メモ・追加に当たらない本人の書き込みは捨てずに Claude に渡し、
+// その書き込みを引用したときだけ done にできる
+func TestOtherLinesAndDoneByQuote(t *testing.T) {
+	h := setupHome(t)
+	f := filepath.Join(h, "f.json")
+	write(t, f, `[{"title": "見積書", "source": {"ref": "slack:a"}}]`)
+	must(t, cmdUpsert(f, true, false))
+	must(t, cmdRecord("1794800000.000100", "C1", false))
+
+	r := filepath.Join(h, "r.json")
+	write(t, r, `[
+	  {"user": "U1", "text": "1ステイ\n見積書、出しました\n〇〇社からのメールは要らない"},
+	  {"user": "U2", "text": "ほかの人の書き込み"},
+	  {"bot_id": "B1", "text": ":speech_balloon: 返信案"}
+	]`)
+	out, err := captureStdout(t, func() error { return cmdComplete(r, false, "U1", false) })
+	must(t, err)
+	if !strings.Contains(out, "そのほかの書き込み 2件") || !strings.Contains(out, "✎ 見積書、出しました") || !strings.Contains(out, "✎ 〇〇社からのメールは要らない") {
+		t.Fatalf("書き込みを渡していない:\n%s", out)
+	}
+	if strings.Contains(out, "ほかの人の書き込み") || strings.Contains(out, "返信案") || strings.Contains(out, "✎ 1ステイ") {
+		t.Fatalf("本人以外・指定の行まで渡した:\n%s", out)
+	}
+
+	// 書き込みに無い文では done にできない
+	if err := cmdDoneByQuote("t001", "見積書、出した", false); err == nil {
+		t.Fatal("書き込みに無い文で done にできた")
+	}
+	out, err = captureStdout(t, func() error { return cmdDoneByQuote("t001", "見積書、出しました", false) })
+	must(t, err)
+	if !strings.Contains(out, "done: t001") || status(loadTask(t, "t001")) != "done" || loadTask(t, "t001").Val("done_by") != "見積書、出しました" {
+		t.Fatalf("done になっていない:\n%s", out)
+	}
+
+	// 次の投稿を控えたら、前のスレッドの書き込みは使えない
+	must(t, cmdRecord("1794900000.000100", "C1", false))
+	if err := cmdDoneByQuote("t002", "見積書、出しました", false); err == nil {
+		t.Fatal("前のスレッドの書き込みで done にできた")
+	}
+}

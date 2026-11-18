@@ -16,7 +16,7 @@ import (
 )
 
 // 自分用の親にだけある、本人向けの案内
-var ownerOnlyMarkers = []string{"詳細はスレッドに"}
+var ownerOnlyMarkers = []string{"詳細はスレッドに", "このスレッドにそのまま書いて"}
 
 // 本人用の下書き。まとめには出さない
 var draftMarkers = []string{"返信案"}

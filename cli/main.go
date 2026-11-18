@@ -90,6 +90,7 @@ func usage() {
   sync complete --replies FILE        スレッド返信の「N完了」などを反映する
   sync upsert --findings FILE         巡回結果を台帳に登録する
   sync status ID... --status S        タスクの status を変える
+  sync done ID --quote "書き込み"     本人の書き込みの完了の報告から done にする
   sync record --ts TS                 投稿したスレッドの ts を控える
   post --payload FILE [--projects]    自分のチャンネルへ親＋子スレッドを投稿する
                                       （点検用に件数だけを送る。--no-team で送らない）
@@ -357,6 +358,14 @@ func runSync(rest []string) (int, error) {
 		}
 		if !ok {
 			return 1, nil
+		}
+		return 0, nil
+	case "done":
+		if len(a.pos) != 2 || !a.has("quote") {
+			return 1, errors.New("task.id と --quote（本人の書き込みをそのまま）が要ります。例: sync done t012 --quote \"見積書、出しました\"")
+		}
+		if err := cmdDoneByQuote(a.pos[1], a.get("quote"), dry); err != nil {
+			return 1, err
 		}
 		return 0, nil
 	case "record":
