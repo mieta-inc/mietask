@@ -233,7 +233,7 @@ function projectsPanel_(v) {
 }
 
 function selfPanel_(v) {
-  return '<p class="lead">管理者・役員には、この内容が見えています（自分のチャンネルの「管理者に届く内容」と同じ）。</p>' + personPanel_(v.self, false, v.today);
+  return '<p class="lead">管理者・役員には、この内容が見えています。</p>' + personPanel_(v.self, false, v.today);
 }
 
 function renderPage_(v, want) {

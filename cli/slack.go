@@ -342,6 +342,9 @@ func postPayloadFile(payloadPath, channelArg, tokenPath string, dryRun, beat boo
 		}
 	}
 	replies := texts[1:]
+	if beat && missingReplyDrafts(replies) {
+		fmt.Fprintln(os.Stderr, "警告: 返事・回答を返すタスクがあるのに、返信案の子スレッドがありません。:speech_balloon: 返信案（コピペ用）を最後の子スレッドに足してください。")
+	}
 
 	channel := channelArg
 	if channel == "" {
@@ -528,4 +531,21 @@ func cmdDelete(tsList []string, tsFile, channel, tokenPath string, dryRun bool) 
 		return errSilent
 	}
 	return nil
+}
+
+// missingReplyDrafts は、次の一手に「返す・返事・返信・回答」が出てくるのに、返信案の子スレッドが無いかを見る
+// （毎朝の投稿で返信案を付け忘れた日があった。2026-11-17・18）。決めつけはせず、警告だけ出す。
+func missingReplyDrafts(replies []string) bool {
+	need := false
+	for _, r := range replies {
+		if strings.Contains(r, "返信案") {
+			return false
+		}
+		for _, line := range strings.Split(r, "\n") {
+			if strings.Contains(line, "次の一手") && containsAny(line, []string{"返す", "返事", "返信", "回答"}) {
+				need = true
+			}
+		}
+	}
+	return need
 }

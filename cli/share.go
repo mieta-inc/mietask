@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -307,38 +306,6 @@ func cmdShare(path string, dryRun bool) error {
 		consumeInput(path)
 	}
 	return nil
-}
-
-// withSharePreview は投稿内容の子スレッドの最後に「管理者に届く内容」を足した一時ファイルを作り、そのパスを返す。
-// 元のファイルは書き換えない。
-func withSharePreview(payloadPath string, items []shareItem) (string, error) {
-	if payloadPath == "" {
-		return "", errors.New("--share は --payload と一緒に使ってください。")
-	}
-	raw, err := os.ReadFile(payloadPath)
-	if err != nil {
-		return "", &PostError{"payloadが見つかりません: " + payloadPath}
-	}
-	v, err := ParseJSON(raw)
-	if err != nil {
-		return "", &PostError{payloadPath + " のJSONが壊れています: " + err.Error()}
-	}
-	data, ok := v.(*Obj)
-	if !ok {
-		return "", &PostError{payloadPath + " のトップレベルはオブジェクトである必要があります。"}
-	}
-	replies, _ := getDefault(data, "replies", []any{}).([]any)
-	data.Set("replies", append(append([]any{}, replies...), splitPreview(sharePreview(items))...))
-
-	dir, err := tmpDir()
-	if err != nil {
-		return "", err
-	}
-	out := filepath.Join(dir, fmt.Sprintf("post-with-share-%d.json", os.Getpid()))
-	if err := os.WriteFile(out, []byte(DumpJSON(data, 0)), 0o600); err != nil {
-		return "", err
-	}
-	return out, nil
 }
 
 // cmdShareProjects は持ち案件の一覧だけを窓口に送り直す（投稿のあとで送れなかったとき）。
