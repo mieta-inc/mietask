@@ -365,8 +365,9 @@ function enrollStart_(body) {
     var code = enrollCode_();
     var pc = enrollText_(body.pc, 60);
     var text = ':key: *ミエタスクの確認コード：' + code + '*\n' +
-      (pc ? pc + ' で' : '') + 'ミエタスクのセットアップが始まりました。この番号を Claude に入力してください（10分のあいだ有効です）。\n' +
-      '心当たりがなければ、このメッセージは無視してください。番号を入れないかぎり、何も起きません。';
+      'いま Claude でミエタスクのセットアップが進んでいます' + (pc ? '（' + pc + '）' : '') + '。\n' +
+      '*Claude の画面に戻って、この6桁をそのまま入力してください。* 10分のあいだ有効です。\n' +
+      '自分で始めた覚えがなければ、何もしないでください。番号を入れないかぎり、何も起きません。';
     var r = slack_('chat.postMessage', { channel: sid, text: text });
     if (!r.ok) throw relayError_('dm_failed', '確認コードを Slack の DM で送れませんでした（' + r.error + '）。Slack ID が正しいか確かめてください');
     props.setProperty('ENROLL_' + sid, JSON.stringify({

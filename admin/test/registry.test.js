@@ -1569,7 +1569,7 @@ test('確認コード：申し込むと本人の DM に6桁が届き、コード
   // 合札そのものは窓口に残さない（sha256 だけ）
   assert.ok(!JSON.stringify(env.props).includes(secret), '合札そのものを窓口に残している');
   const code = codeOf(env, 'U0NEW0007');
-  assert.match(env.slack.dms.U0NEW0007[0].text, /確認コード：\d{6}[\s\S]*新人のMac で[\s\S]*無視してください/);
+  assert.match(env.slack.dms.U0NEW0007[0].text, /確認コード：\d{6}[\s\S]*（新人のMac）[\s\S]*Claude の画面に戻って、この6桁をそのまま入力[\s\S]*何もしないでください/);
   assert.ok(!env.props.KEY_U0NEW0007, 'コードを入れる前に鍵ができている');
   // まだコードを入れていないうちは、同じ人の申し込みを重ねない
   assert.strictEqual(call(env, { action: 'enroll_start', slack_id: 'U0NEW0007', verifier: hex256('x') }).error, 'pending');

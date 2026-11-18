@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "mietask",
-      "description": "毎朝Slack・Gmail・カレンダーを巡回して、自分が対応すべきタスクを自分専用のSlackチャンネルに投稿する。スレッドに「3完了」と返信すると翌朝に台帳へ反映される。",
+      "description": "毎朝、Slack・Gmail・カレンダーから自分が動くべきものを拾って、自分専用の Slack チャンネルに届ける。入れたら Claude の「Code」タブで /mietask:setup と打つと、10分ほどで使い始められる。",
       "author": { "name": "ミエタ" },
       "source": "./plugins/mietask",
       "category": "productivity"
