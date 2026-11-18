@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "mietask",
-      "description": "毎朝、Slack・Gmail・カレンダーから自分が動くべきものを拾って、自分専用の Slack チャンネルに届ける。入れたら Claude の「Code」タブで /mietask:setup と打つと、10分ほどで使い始められる。",
+      "description": "毎朝、Slack・Gmail・カレンダーから自分が動くべきものを拾って、自分専用の Slack チャンネルに届ける。入れたら Claude の「Code」タブで /mietask:setup と打つと、15分ほどで使い始められる。",
       "author": { "name": "ミエタ" },
       "source": "./plugins/mietask",
       "category": "productivity"
