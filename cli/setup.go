@@ -229,6 +229,13 @@ func cmdSetup(a *args) error {
 	} else {
 		fmt.Printf("自動更新: %s\n", st)
 	}
+	// 7. 許可（自動承認モードが使えなくても、毎朝の実行が確認画面で止まらないように）。
+	// コネクタの道具は setup の会話で見つけた名前を `mietask permissions --tools` で別に足す
+	if st, err := ensurePermissions(nil, dry); err != nil {
+		fmt.Printf("許可: 入れられませんでした（%v）。`mietask permissions` をあとで実行してください\n", err)
+	} else {
+		fmt.Printf("許可: %s\n", st)
+	}
 
 	fmt.Printf("channel: %s\n", channel)
 	fmt.Printf("channel_name: %s\n", chName)

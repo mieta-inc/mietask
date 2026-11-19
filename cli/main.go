@@ -106,6 +106,8 @@ func usage() {
   team-payload --payload FILE --name NAME   まとめチャンネル用の投稿内容を作る
   registry [--team ID]                管理台帳の中身を出す（管理者の画面用）
   autoupdate                          このプラグインの自動更新を Claude Code の設定に入れる
+  permissions [--tools T1,T2,...]     毎朝の実行が確認画面で止まらないよう、ミエタスクが使う操作だけを許可に入れる
+                                      （--tools はコネクタの読み取りの道具の名前。読み取り以外は受け付けない）
   delete --ts TS                      Botの投稿を消す
   paths home|tmp                      データの置き場所を出す
   enroll start --slack-id U --name N [--email E] [--pc P]   確認コードを本人の Slack の DM に送ってもらう
@@ -195,6 +197,11 @@ func run(argv []string) int {
 		var a *args
 		if a, err = parseArgs(rest); err == nil {
 			err = cmdAutoUpdate(a.flags["dry-run"])
+		}
+	case "permissions":
+		var a *args
+		if a, err = parseArgs(rest); err == nil {
+			err = cmdPermissions(a.get("tools"), a.flags["dry-run"])
 		}
 	case "registry":
 		var a *args

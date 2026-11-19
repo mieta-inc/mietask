@@ -26,13 +26,13 @@ description: 管理者がチームメンバーの「抱えている案件・そ�
 
 ## 0. チームとメンバーを読む
 
-以下 `$B` = `${CLAUDE_PLUGIN_ROOT}/bin/mietask` とする。
+実行ファイルは `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" <コマンド>` と、パスをそのまま書いて1つずつ呼ぶ（変数に入れない。`;` や `&&` でつながない）。
 
 **管理台帳（スプレッドシート）から読む。** 「PMの状況」なら `--team pm`。親チームを指すと、
 その下のチーム（PM1・PM2…）もまとめて返る。
 
 ```bash
-bash "$B" registry --team pm
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" registry --team pm
 ```
 
 | 返ってくるもの | 使い方 |
@@ -45,7 +45,7 @@ bash "$B" registry --team pm
 | `daily`・`system_admin` | システム管理者のときだけ返る、動作の点検用の件数。**状況のまとめには使わない**（下の 3） |
 
 - 並び順は台帳のメンバーの順
-- 「管理台帳を使っていません」と出たら、従来どおり `$H/team.json` を読む（`$H` は `bash "$B" paths home` の出力。
+- 「管理台帳を使っていません」と出たら、従来どおり `$H/team.json` を読む（`$H` は `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" paths home` の出力。
   形は `{"team","channel","notion":{"projects","tasks"},"members":[{"name","slack_id","notion_user"}]}`）
 - Notion のユーザーIDは、台帳の `members[].notion_user` を使う。空の人だけ、Notion の検索で `query_type: "user"` にしてメールを渡して引く。
   ユーザー一覧（get-users）には全員が出ないので使わない。引けた値は `$H/notion-users.json`（メール → `user://…`）に

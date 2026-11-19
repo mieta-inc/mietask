@@ -32,10 +32,19 @@ func missedWeekdayRuns(last, now time.Time) int {
 func doctorUpkeep(ok, warn func(string, string), now time.Time) {
 	if s, _, err := readClaudeSettings(); err != nil {
 		warn("自動更新", err.Error())
-	} else if autoUpdateOn(s) {
-		ok("自動更新", "入っています")
 	} else {
-		warn("自動更新", "入っていません。直した版が届きません。`mietask autoupdate` で入れられます")
+		if autoUpdateOn(s) {
+			ok("自動更新", "入っています")
+		} else {
+			warn("自動更新", "入っていません。直した版が届きません。`mietask autoupdate` で入れられます")
+		}
+		if good, err := permissionsOK(s); err != nil {
+			warn("許可", err.Error())
+		} else if good {
+			ok("許可", "毎朝の実行に要る操作は許可済みです")
+		} else {
+			warn("許可", "毎朝の実行に要る操作が許可に入っていません。確認画面で止まり、投稿が届きません。`mietask permissions` で入れられます")
+		}
 	}
 
 	st, err := loadLedger(statePath())

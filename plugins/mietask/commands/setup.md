@@ -12,14 +12,23 @@ mietask を使える状態にする。**本人に質問しないで進める。*
 
 所要10〜15分（最初の巡回に5〜10分）。途中で止まっても、もう一度 `/mietask:setup` と打てば続きから進む（作ったものは上書きしない）。
 
-以下 `$B` = `${CLAUDE_PLUGIN_ROOT}/bin/mietask` とする。処理はすべてこの実行ファイルが受け持つ。
+処理はすべて実行ファイル `${CLAUDE_PLUGIN_ROOT}/bin/mietask` が受け持つ。
 Mac でも Windows でも同じコマンドで動き、追加のインストールは要らない。**パスは必ず `"…"` で囲む。**
+
+**コマンドの打ち方（毎朝の実行が確認画面で止まらないように）**
+
+- 実行ファイルは毎回 `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" <コマンド> [引数]` と、パスをそのまま書いて呼ぶ。`B=…` のように変数に入れない
+- 1回の Bash で打つのは1つのコマンドだけ。`;` `&&` `|` でつながない。`cd` もしない
+- 台帳や設定を `cat`・`python3` などで直接読まない。中身は実行ファイルの出力と Read ツールで見る
+- 自動承認モードが使えない会社でも、この形だけは許可に登録してある（`mietask permissions`）。
+  外れた形で打つと確認画面で止まり、朝の投稿が届かない
 
 最初に本人へ一言伝える:
 
 > ミエタスクのセットアップを始めます。10分ほどで終わります。
 > お願いするのは、Slack に届く確認コードを入れることと、所属チームを選ぶことの2つだけです。あとはこちらで進めます。
-> 許可を何度も聞かれないように、入力欄の下のモードを「Auto」にしておいてください。
+> 途中で何度か、操作の許可を求める画面が出ます。そのたびに「許可」を押してください。
+> 毎朝の実行では出ないように、ミエタスクが使う操作だけをセットアップの中で許可に登録します。
 
 ---
 
@@ -38,9 +47,10 @@ pwd
 **含まれていたら一時フォルダ。** ほかの節に進まず、作業場所をミエタスクのデータ置き場に移す。
 
 ```bash
-mkdir -p "$(bash "$B" paths home)"
-bash "$B" paths home
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" paths home
 ```
+
+出てきた絶対パスのフォルダが無ければ作る（`mkdir -p "<出てきた絶対パス>"`）。
 
 本人に「作業場所を移す許可を求める画面が出たら、許可してください」と伝えてから、出てきた絶対パスを
 作業場所を移す道具（`ToolSearch("change directory")` で出てくる `change_directory`）に渡す。
@@ -55,13 +65,14 @@ bash "$B" paths home
 ## 1. もう入っているか見る
 
 ```bash
-bash "$B" doctor
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" doctor
 ```
 
 - ❌ も ⚠️ も無ければ、**すでに使える状態。** そう伝えて終わる（やり直さない）
 - 「設定がありません」なら初回。2へ
 - それ以外の ❌ は、その項目に対応する節だけをやり直す（鍵 → 3、投稿先 → 4）
-- ⚠️ 自動更新 → `bash "$B" autoupdate` を実行する
+- ⚠️ 自動更新 → `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" autoupdate` を実行する
+- ⚠️ 許可 → 2 でコネクタの道具の名前を集めてから、6 の「許可を登録する」だけをやる
 - ⚠️ 毎朝の投稿 → 6 の定期タスクを確かめる。作業場所が消えていれば、0 の手順で移してから 6 で作り直す
 
 ## 2. コネクタを確かめる
@@ -83,6 +94,16 @@ ToolSearch("calendar list events")
 | 名前 | Slack のプロフィール（表示名ではなく氏名。例: `山田 太郎`） |
 | メール | Slack のプロフィール、または Gmail の自分宛てのメール |
 | ワークスペース | Slack のパーマリンクのドメイン（`xxxx.slack.com` の `xxxx`） |
+| 読み取りの道具の名前 | 下の表の道具の、`mcp__` から始まる正式な名前（6 で許可に登録する）。ToolSearch の結果やツール一覧にある名前をそのまま控える |
+
+| コネクタ | 控える道具（名前の最後の部分） |
+|---|---|
+| Slack | `slack_read_thread` `slack_read_channel` `slack_read_user_profile` `slack_search_public` `slack_search_public_and_private` `slack_search_channels` `slack_search_users` |
+| Gmail | `search_threads` `get_thread` `list_labels` |
+| Googleカレンダー | `list_events` `get_event` `list_calendars` |
+| Googleドライブ（つないでいれば） | `list_recent_files` `search_files` `get_file_metadata` `read_file_content` |
+
+**送信・作成・削除の道具は控えない。** 許可に入れるのは読み取りだけ（実行ファイルも、読み取り以外は受け付けない）。
 
 繋がっていないものがあれば、**何が繋がっていないか**を入れて、本人にこう伝えて止まる:
 
@@ -96,7 +117,7 @@ ToolSearch("calendar list events")
 2で集めた値を渡す。**メールは Slack のプロフィールのもの**を渡す（管理台帳に入り、ページで本人を見分けるのに使う）。
 
 ```bash
-bash "$B" enroll start --slack-id U0XXXXXXX --name "山田 太郎" --email name@example.com
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" enroll start --slack-id U0XXXXXXX --name "山田 太郎" --email name@example.com
 ```
 
 - `鍵: すでに入っています` と出たら、この節は終わり。4へ
@@ -108,7 +129,7 @@ bash "$B" enroll start --slack-id U0XXXXXXX --name "山田 太郎" --email name@
 本人が番号を入れたら、その番号を渡す:
 
 ```bash
-bash "$B" enroll finish --code 123456
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" enroll finish --code 123456
 ```
 
 - `鍵: 保存しました` と出たら4へ。鍵はこのコマンドの中でファイルに保存されるだけで、**この会話にも出力にも出ない**
@@ -129,7 +150,7 @@ bash "$B" enroll finish --code 123456
 2で集めた値を渡す。**ここで設定ファイル・台帳・投稿先チャンネルがまとめてできる。**
 
 ```bash
-bash "$B" setup --slack-id U0XXXXXXX --email name@example.com --name "山田 太郎" --workspace xxxx
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" setup --slack-id U0XXXXXXX --email name@example.com --name "山田 太郎" --workspace xxxx
 ```
 
 - 投稿先の名前はメールから決まる（`ミエタスク-<名字>`。使われていれば名前も付ける。日本語が使えなければ英字）。本人には聞かない
@@ -149,7 +170,7 @@ bash "$B" setup --slack-id U0XXXXXXX --email name@example.com --name "山田 太
 ### チームを選ぶ
 
 ```bash
-bash "$B" teams
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" teams
 ```
 
 - `所属: …（すでに入っています…）` と出たら何もしない
@@ -162,7 +183,7 @@ bash "$B" teams
 選ばれた番号の行の右端の ID を渡す（「わからない」なら `none`）:
 
 ```bash
-bash "$B" join-team pm1
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" join-team pm1
 ```
 
 入ったら本人に伝える:
@@ -174,7 +195,7 @@ bash "$B" join-team pm1
 本人のプライベートチャンネルなので、聞かずに投稿してよい。
 
 ```bash
-bash "$B" paths tmp
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" paths tmp
 ```
 
 出てきたフォルダに `hello.json` を **Writeツールで** 書く（パスは出力の絶対パスを使う。`~` は使わない）:
@@ -187,14 +208,30 @@ bash "$B" paths tmp
 `"pin": true` で、このメッセージはチャンネルにピン留めされる。`--no-team` は点検用の件数を送らない指定（あいさつには件数が無いので、送るとその日の件数が0で上書きされる）。`ピン留めできませんでした` と出ても投稿は済んでいるので、やり直さず先へ進む。
 
 ```bash
-bash "$B" post --payload "<tmpの絶対パス>/hello.json" --no-team
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" post --payload "<tmpの絶対パス>/hello.json" --no-team
 ```
 
-届いたことを Slack で見てもらう。届かなければ `bash "$B" doctor` を実行して、❌ の行を伝える。
+届いたことを Slack で見てもらう。届かなければ `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" doctor` を実行して、❌ の行を伝える。
 
 ## 6. 毎朝動くようにする
 
 **0 を通ったあとで作る**（作業場所が一時フォルダのまま作ると、そのセッションを消した日から止まる）。
+
+### 許可を登録する
+
+会社の設定で自動承認（Auto）モードが使えないことがある。そのままだと、毎朝の実行が確認画面で止まって投稿が届かない。
+ミエタスクが使う操作だけを許可に登録しておく。2 で控えた読み取りの道具の名前を `,` でつないで渡す:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" permissions --tools mcp__xxxx__slack_read_thread,mcp__xxxx__slack_read_channel,mcp__yyyy__search_threads,…
+```
+
+- 実行ファイル・`~/.mietask` の読み書き・ミエタスクのスキルは、4 の `setup` で登録済み。ここで足すのはコネクタの道具
+- `許可: N件を足しました` か `すでに入っています` が出れば済み
+- 「読み取りの道具ではないので、許可に入れません」と出たら、その名前を外してやり直す
+- 本人の Claude の設定（`~/.claude/settings.json`）に足すだけで、ほかの設定は変えない。書き換える前に控え（`settings.json.bak-mietask`）を取る
+
+### 定期タスクを作る
 
 `scheduled-tasks` のツールで定期タスクを作る。**時刻は聞かずに平日7時にする**（変えたいと言われたら変える）。
 
@@ -207,9 +244,7 @@ ToolSearch("create scheduled task")
 - cron: `0 7 * * 1-5`
 - prompt: 「mietask プラグインの task-daily スキルを使って、Slack・Gmail・Googleカレンダーを巡回し、自分のミエタスクのチャンネルに今日の一覧を投稿する。前日のスレッドへの返信（完了・ステイ・メモ・追加）も反映する」
 
-**結果に、Auto モードで保存されたかが出る。** Auto で保存されていなければ、朝の実行が許可待ちで止まり、
-投稿が届かない。その場合は本人に「入力欄の下のモードを Auto にしてください」と伝え、切り替わったら
-同じ taskId で作り直す（`update_scheduled_task` で中身を同じにして保存し直す）。
+モードは Auto でなくてよい。登録した許可の範囲なら、毎朝の実行で確認画面は出ない。
 
 本人に伝える:
 
