@@ -84,25 +84,7 @@ func ensureAutoUpdate(dry bool) (string, error) {
 	}
 	entry.Set("autoUpdate", true)
 
-	p := claudeSettingsPath()
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return "", err
-	}
-	if existed {
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			return "", err
-		}
-		if err := os.WriteFile(p+".bak-mietask", raw, 0o644); err != nil {
-			return "", fmt.Errorf("控えを取れなかったので書き換えません: %v", err)
-		}
-	}
-	tmp := p + ".tmp-mietask"
-	if err := os.WriteFile(tmp, []byte(DumpJSON(s, 2)+"\n"), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		_ = os.Remove(tmp)
+	if err := writeClaudeSettings(s, existed); err != nil {
 		return "", err
 	}
 	return "入れました", nil

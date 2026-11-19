@@ -22,17 +22,24 @@ description: Slack・Gmail・Googleカレンダーを巡回し、自分が対応
 **`tasks.json` は唯一の正。手で編集しない。** 登録と完了反映は必ず
 `mietask sync` を通す（バックアップと原子的な置き換えが入っている）。
 
-以下 `$B` = `${CLAUDE_PLUGIN_ROOT}/bin/mietask` とする。
+**コマンドの打ち方（毎朝の実行が確認画面で止まらないように）**
+
+- 実行ファイルは毎回 `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" <コマンド> [引数]` と、パスをそのまま書いて呼ぶ。`B=…` のように変数に入れない
+- 1回の Bash で打つのは1つのコマンドだけ。`;` `&&` `|` でつながない。`cd` もしない
+- 台帳や設定を `cat`・`python3` などで直接読まない。中身は実行ファイルの出力と Read ツールで見る
+- 自動承認モードが使えない会社でも、この形だけは許可に登録してある（`mietask permissions`）。
+  外れた形で打つと確認画面で止まり、朝の投稿が届かない
 
 **Mac でも Windows でも同じ手順で動かす。**
 
-- 処理は必ず `bash "$B" <コマンド> [引数]` で呼ぶ。パスは必ず `"…"` で囲む
-- 一時ファイルは `/tmp` ではなく `$T` に書く。最初に次を実行し、出てきた絶対パスを `$H`・`$T` とする。
-  Writeツール・Readツールに渡すパスには `~` を使わず、この絶対パスを使う
+- パスは必ず `"…"` で囲む
+- 一時ファイルは `/tmp` ではなく `$T` に書く。最初に次の2つを**1つずつ**実行し、出てきた絶対パスを `$H`・`$T` とする。
+  `$H`・`$T` はこの手順書の中の呼び名で、シェルの変数ではない。コマンドやツールには、出てきた絶対パスを書き写して渡す。
+  Writeツール・Readツールに渡すパスにも `~` を使わず、この絶対パスを使う
 
 ```
-bash "$B" paths home
-bash "$B" paths tmp
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" paths home
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" paths tmp
 ```
 
 ---
@@ -40,7 +47,7 @@ bash "$B" paths tmp
 ## 1. 前日の返信を反映する
 
 ```
-bash "$B" sync thread
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync thread
 ```
 
 `ts` が出なければ初回。この節を飛ばして2へ。
@@ -60,7 +67,7 @@ Botが投げた子スレッドを本人の発言と取り違えると、無関�
 ファイルを書かずに先へ進まない。
 
 ```
-bash "$B" sync complete --replies "$T/task-replies.json"
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync complete --replies "$T/task-replies.json"
 ```
 
 **入力ファイルは、使い終わると実行ファイルが消す**（返信・巡回結果・投稿内容のどれも）。
@@ -92,7 +99,7 @@ bash "$B" sync complete --replies "$T/task-replies.json"
 
 | 書き込み | 扱い |
 |---|---|
-| 終わったことの報告（「見積書、出しました」「〇〇の件は片付いた」） | `bash "$B" sync thread` の `mapping` と台帳の題名から、**どれのことか1つに決まるときだけ** `bash "$B" sync done <id> --quote "<✎の行をそのまま>"`。2つ以上に当たる・どれにも当たらないときは done にせず、投稿で「これのことですか？」と番号つきで聞く |
+| 終わったことの報告（「見積書、出しました」「〇〇の件は片付いた」） | `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync thread` の `mapping` と台帳の題名から、**どれのことか1つに決まるときだけ** `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync done <id> --quote "<✎の行をそのまま>"`。2つ以上に当たる・どれにも当たらないときは done にせず、投稿で「これのことですか？」と番号つきで聞く |
 | 出さなくていいもの（「〇〇社からのメールは要らない」「#〇〇 は見なくていい」） | `$H/config.json` の `gmail.exclude_senders`（送信元のアドレスを台帳のタスクの出所から引く）・`slack.exclude_channels`（チャンネルID）に足す。今出ている該当タスクは `sync status <id> --status dropped --note "本人の書き込み: …"` |
 | 一覧の作り方への要望（「出欠確認は出さなくていい」「〇〇さんからの依頼は今日中に入れて」「返信案はもっと短く」） | `$H/config.json` の `requests`（無ければ作る）に `{"text": "<書き込みの要点>", "since": "yyyy-mm-dd"}` を足す。2 の巡回と 4 の組み立てで必ず従う |
 | 取り消し（「さっきのは戻して」「〇〇のメールはやっぱり出して」） | 足したものを `config.json` から外す |
@@ -172,7 +179,7 @@ bash "$B" sync complete --replies "$T/task-replies.json"
 - **推測で金額・期限・担当者を埋めない。** 読み取れないなら notes に「要確認」と書く
 
 ```
-bash "$B" sync upsert --findings "$T/task-findings.json"
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync upsert --findings "$T/task-findings.json"
 ```
 
 出力の「表示番号 → task.id」を**そのまま使う。** 番号を自分で振り直さない。
@@ -264,8 +271,8 @@ upsert の出力に「前回のメモ・ステイ」があれば、そのタス�
 管理者に届くのはこの一覧（案件名・関わり方・状態・段階・次の節目・いまの状態の一言・詳細・最後に動いた日）だけ。タスクの題名や件数は届かない。
 
 ```
-bash "$B" projects list
-bash "$B" share hints
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" projects list
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" share hints
 ```
 
 `projects list` が今の一覧。`share hints` は案件名の手がかり（本人が関わる MTD の案件名と、同じチームの人が使っている案件名）。
@@ -320,7 +327,7 @@ bash "$B" share hints
 ```
 
 ```
-bash "$B" projects update --file "$T/projects.json"
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" projects update --file "$T/projects.json"
 ```
 
 **名前の決め方**（上から順に使う。前の日と同じ案件には必ず同じ名前を使う）
@@ -370,12 +377,12 @@ payloadを **`"$T/task-check-payload.json"`** に書く。**Writeツールを使
 
 まず中身を確認する:
 ```
-bash "$B" post --payload "$T/task-check-payload.json" --projects --dry-run
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" post --payload "$T/task-check-payload.json" --projects --dry-run
 ```
 
 警告が出たら payload を直してから、投稿する:
 ```
-bash "$B" post --payload "$T/task-check-payload.json" --projects
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" post --payload "$T/task-check-payload.json" --projects
 ```
 
 **一覧が出るのは自分のチャンネルだけ。** 実行ファイルは投稿のあとで次の2つを管理台帳に送る
@@ -398,7 +405,7 @@ bash "$B" post --payload "$T/task-check-payload.json" --projects
 **これを忘れると、翌朝の完了反映が動かない。**
 
 ```
-bash "$B" sync record --ts <出力されたts>
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync record --ts <出力されたts>
 ```
 
 ## 8. 失敗したとき
@@ -410,7 +417,7 @@ bash "$B" sync record --ts <出力されたts>
   投げ直すと二重になるので、残りだけを `thread_ts` 指定で投げるか、本人に報告する。
   その場合も親の ts は 7 で必ず控える
 - トークン切れ・スコープ不足・Botが退出などは自分で直せない。
-  **何が起きたかを報告して止まる。** 原因が分からなければ `bash "$B" doctor` を実行して、❌ の行を報告に含める
+  **何が起きたかを報告して止まる。** 原因が分からなければ `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" doctor` を実行して、❌ の行を報告に含める
 - 「管理台帳で停止されています」と出たら、投稿はされていない。そのまま報告して止まる（再実行しない）
 - 台帳が壊れたら `~/.mietask/data/tasks.json.bak_*`（直近30件が残っている）から戻す。自力で直そうとしない
 
@@ -419,19 +426,19 @@ bash "$B" sync record --ts <出力されたts>
 番号はその日の投稿の通し番号。まず対応を確かめてから動かす:
 
 ```
-bash "$B" sync thread
+bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync thread
 ```
 
 `mapping` の番号から task.id を引く（`t091` のようにIDで言われたらそのまま使う）。
 
 | 言われたこと | やること |
 |---|---|
-| 「3は対応不要」「これは要らない」 | `bash "$B" sync status <id> --status dropped --note "本人: 対応不要"`。以後出ない |
-| 「3は来週にする」「今週はやらない」 | `bash "$B" sync status <id> --status later`。巡回で拾われたときだけ出る |
-| 「2は〇〇さん待ち」 | `bash "$B" sync status <id> --status blocked --note "〇〇さん待ち"`。相手待ちの欄に移る |
+| 「3は対応不要」「これは要らない」 | `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync status <id> --status dropped --note "本人: 対応不要"`。以後出ない |
+| 「3は来週にする」「今週はやらない」 | `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync status <id> --status later`。巡回で拾われたときだけ出る |
+| 「2は〇〇さん待ち」 | `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" sync status <id> --status blocked --note "〇〇さん待ち"`。相手待ちの欄に移る |
 | 「〇〇からのメールは出さなくていい」「このチャンネルは見なくていい」 | `$H/config.json` の `gmail.exclude_senders`（送信元のアドレス）か `slack.exclude_channels`（チャンネルID）に足す。**Editツールで、既存の項目は消さない。** 足す前に、何を足すかを本人に一言で確かめる。あわせて今出ている該当タスクは上の「対応不要」と同じく dropped にする |
-| 「〇〇は管理者に出さないで」 | `$H/config.json` の `share.exclude`（文字列の配列。無ければ作る）に案件名を足す。**Editツールで、既存の項目は消さない。** あわせて `bash "$B" projects remove "〇〇"`。すでに届いた分は翌朝の一覧で置き換わる |
-| 「〇〇は終わった」「〇〇は持っていない」 | `bash "$B" projects remove "〇〇"`。翌朝の一覧から消え、90日は巡回で拾っても戻らない |
+| 「〇〇は管理者に出さないで」 | `$H/config.json` の `share.exclude`（文字列の配列。無ければ作る）に案件名を足す。**Editツールで、既存の項目は消さない。** あわせて `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" projects remove "〇〇"`。すでに届いた分は翌朝の一覧で置き換わる |
+| 「〇〇は終わった」「〇〇は持っていない」 | `bash "${CLAUDE_PLUGIN_ROOT}/bin/mietask" projects remove "〇〇"`。翌朝の一覧から消え、90日は巡回で拾っても戻らない |
 | 「〇〇はまた持った」「〇〇も持っている」 | `"$T/projects.json"` に `{"restore": ["〇〇"], "touched": [{"name": "〇〇", "state": "動いている", "note": "…"}]}` を書いて `projects update`（外していない案件なら `restore` は要らない） |
 | 「〇〇と△△は同じ案件」 | `"$T/projects.json"` に `{"rename": [{"from": "〇〇", "to": "△△"}]}` を書いて `projects update` |
 | 「3終わった」 | **ここでは done にしない。** その日の投稿に「3完了」と返信してもらう（完了は返信からだけ記録する作り） |
